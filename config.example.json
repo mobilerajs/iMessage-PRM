@@ -1,0 +1,6 @@
+{
+  "user_name": "Your Name",
+  "model": "mlx-community/Qwen3-4B-Instruct-2507-4bit",
+  "chat_db": "data/chat.db",
+  "contacts_vcf": "data/contacts.vcf"
+}

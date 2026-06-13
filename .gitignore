@@ -1,0 +1,19 @@
+# Personal data — never commit
+data/
+out/
+
+# Local user-specific config (copy from config.example.json)
+config.json
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+
+# Local model runtime (large; recreate with: python3 -m venv .venv && pip install mlx-lm)
+.venv/
+
+# One-off local debug helper (not product code)
+spikes/run_kids_friends.py

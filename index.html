@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>iMessage Personal Relationship Manager</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <header id="sidebar-head">
+        <div id="title-row">
+          <h1>iMessage Personal Relationship Manager</h1>
+          <button id="overflow-btn" title="More">⋯</button>
+        </div>
+        <input id="search" type="search" placeholder="Search names — or describe a topic + Enter…" autocomplete="off" />
+        <div id="sortbar">
+          <label>Sort
+            <select id="sort">
+              <option value="recent">Newest first</option>
+              <option value="oldest">Oldest first</option>
+              <option value="name">Name (A–Z)</option>
+              <option value="most">Most contacted</option>
+              <option value="least">Least contacted</option>
+            </select>
+          </label>
+          <label id="groups-toggle" title="Group conversations aren't a category — show them in All">
+            <input type="checkbox" id="show-groups" /> Show groups
+          </label>
+          <button id="newfilter" title="Create a smart filter with the local model">+ New filter</button>
+        </div>
+        <div id="jobbar" hidden></div>
+        <div id="filterbar"></div>
+        <div id="count"></div>
+      </header>
+      <div id="bulkbar" hidden></div>
+      <ul id="list"></ul>
+    </aside>
+    <main id="thread">
+      <div id="empty">Select a conversation</div>
+      <header id="thread-head" hidden>
+        <div id="th-avatar"></div>
+        <div id="th-meta">
+          <div id="th-name"></div>
+          <div id="th-sub"></div>
+        </div>
+        <div id="th-actions">
+          <a id="msg-btn" title="Open in Messages to send a message" hidden>💬 Message</a>
+          <button id="contact-btn" title="Open this person in Contacts.app" hidden>👤 Contact</button>
+          <button id="hide-btn" title="Hide this conversation — removes them from your lists (reversible)">Hide</button>
+        </div>
+      </header>
+      <div id="th-roster" hidden></div>
+      <div id="messages"></div>
+      <div id="jump-nav" hidden>
+        <button id="jump-top" title="Jump to the oldest message">↑</button>
+        <button id="jump-bottom" title="Jump to the newest message">↓</button>
+      </div>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

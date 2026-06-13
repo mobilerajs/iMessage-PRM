@@ -1,0 +1,17 @@
+# Runtime dependencies for the local iMessage PRM. Everything runs on-device;
+# nothing here makes a network call at query time (models download once at
+# install). Pinned loosely to the MLX stack so there is NO torch dependency.
+
+# Web server for the local UI + API.
+Flask>=3.1
+
+# Numerics: the embedding index is a plain numpy (N, d) matrix + cosine.
+numpy>=2.0
+
+# On-device LLM (Qwen3-4B) for classification + the search/filter confirm step.
+mlx-lm>=0.31
+
+# On-device embedding model (BGE small) for hybrid semantic search retrieval.
+# MLX-native — chosen specifically to avoid pulling in torch. Provides
+# mlx-community/bge-small-en-v1.5-bf16 (384-d, already L2-normalized).
+mlx-embeddings>=0.1
