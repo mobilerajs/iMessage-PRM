@@ -6,11 +6,13 @@ talk to — junk, bots, OTP codes, and marketing removed — so you can find som
 see who you've lost touch with, and keep light relationship context. All intelligence
 (categorization, search) runs **on-device** via a local model. Nothing is uploaded.
 
-> **Status: first-pass / work-in-progress.** Built as a time-boxed project. The core
-> works end-to-end, but the UI is still emerging and several things are deliberately
-> unfinished — see **[What's not done yet](#whats-not-done-yet)**. Read that section;
-> it's honest about the gaps (no formal evals, light test coverage, no installer, uses
-> a *copy* of the database, no email enrichment yet).
+> **Status: baseline / first-pass.** This was built as a **homework assignment for a
+> Maven class**, in a **few hours**. It works end-to-end, but it's deliberately just a
+> baseline — there are **numerous enhancements, scaffolding, and hardening still to do**
+> (real evals, broader test coverage, packaging/installer, live-database access, email
+> enrichment, UI rework, error handling). See **[What's not done yet](#whats-not-done-yet)**
+> and **[Roadmap](#roadmap-planned-enhancements)** for the honest gaps. Treat this as a
+> proof-of-concept, not production software.
 
 It's a **view, not a system of record** — a read-only lens over your messages, with
 *suggestions* you act on if you want, never a profile you're obligated to curate.
