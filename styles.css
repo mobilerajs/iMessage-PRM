@@ -142,7 +142,8 @@ body {
 .opt-toggle { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-size: 13px; color: var(--muted); }
 .opt-toggle:hover { color: var(--text); }
 .opt-toggle input { margin: 0; cursor: pointer; accent-color: var(--blue); }
-#groups-toggle { margin-left: auto; }
+/* Group both toggles together on the right, not split across the row. */
+#unnamed-toggle { margin-left: auto; }
 
 /* ---- Status line ---- */
 #status { font-size: 13px; color: var(--muted); margin-top: 11px; min-height: 17px; }
