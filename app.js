@@ -799,6 +799,30 @@ function setRefreshing(on) {
     : "↻ Refresh";
 }
 
+// Poll the shared /api/job/<id> route ~every 1s until the job finishes.
+// Calls onProgress(job) while running, onDone(job) on success, onError(message)
+// on failure or a lost connection. Reused by Refresh and filter deletes so the
+// background-job UX (no synchronous request-thread hangs) stays consistent.
+function pollJob(jobId, { onProgress, onDone, onError }) {
+  const tick = async () => {
+    let j;
+    try {
+      j = await fetch("/api/job/" + jobId).then((r) => r.json());
+    } catch (e) {
+      if (onError) onError("lost connection");
+      return;
+    }
+    if (j.state === "done") { if (onDone) onDone(j); return; }
+    if (j.state === "error") {
+      if (onError) onError(j.error || j.message || "unknown error");
+      return;
+    }
+    if (onProgress) onProgress(j);   // running / superseded-as-running stages
+    setTimeout(tick, 1000);
+  };
+  setTimeout(tick, 1000);
+}
+
 // Re-pull the generated data + shared state after a rebuild and re-render.
 async function reloadAfterRefresh() {
   try {
@@ -835,18 +859,10 @@ async function startRefresh() {
     statusEl.textContent = "Refresh failed: " + ((job && job.error) || "no job id");
     return;
   }
-  // Poll the existing /api/job/<id> route ~every 1s until done/error.
-  const poll = async () => {
-    let j;
-    try {
-      j = await fetch("/api/job/" + job.job_id).then((r) => r.json());
-    } catch (e) {
-      closeRefreshOverlay();
-      setRefreshing(false);
-      statusEl.textContent = "Refresh failed (lost connection).";
-      return;
-    }
-    if (j.state === "done") {
+  // Poll the shared /api/job/<id> route until done/error.
+  pollJob(job.job_id, {
+    onProgress: (j) => setRefreshStage(refreshStageText(j.message)),
+    onDone: async (j) => {
       await reloadAfterRefresh();
       closeRefreshOverlay();
       setRefreshing(false);
@@ -861,20 +877,48 @@ async function startRefresh() {
         msg += " · new messages snapshotted";
       }
       statusEl.textContent = msg;
-      return;
-    }
-    if (j.state === "error") {
+    },
+    onError: (m) => {
       closeRefreshOverlay();
       setRefreshing(false);
-      statusEl.textContent = "Refresh failed: " + (j.message || "unknown error");
-      return;
-    }
-    // running: surface the live stage in the overlay and keep polling.
-    setRefreshStage(refreshStageText(j.message));
-    setTimeout(poll, 1000);
-  };
-  setTimeout(poll, 1000);
+      statusEl.textContent = "Refresh failed: " + m;
+    },
+  });
 }
+
+// Delete a filter, then (for semantic filters) wait on the server's background
+// rebuild before reloading. The DELETE persists immediately and returns a
+// job_id when a rebuild is needed; we poll it like Refresh so the UI never
+// blocks on the rebuild and surfaces the build's stderr inline on failure.
+async function deleteFilter(fid) {
+  let resp;
+  try {
+    resp = await fetch("/api/filter/" + encodeURIComponent(fid),
+                       { method: "DELETE" }).then((r) => r.json());
+  } catch (e) {
+    statusEl.textContent = "Delete failed (server unreachable).";
+    return;
+  }
+  if (resp && resp.error) {
+    statusEl.textContent = "Delete failed: " + resp.error;
+    return;
+  }
+  // No job_id => nothing to rebuild (e.g. a category filter): reload now.
+  if (!resp || !resp.job_id) {
+    await reloadAfterRefresh();
+    return;
+  }
+  statusEl.textContent = "Removing filter…";
+  pollJob(resp.job_id, {
+    onDone: async () => {
+      await reloadAfterRefresh();
+      statusEl.textContent = "Filter removed";
+    },
+    onError: (m) => { statusEl.textContent = "Delete failed: " + m; },
+  });
+}
+// Exposed for the filter-management UI (inline handlers) to call.
+window.deleteFilter = deleteFilter;
 
 if (refreshBtn) refreshBtn.addEventListener("click", openRefreshModal);
 

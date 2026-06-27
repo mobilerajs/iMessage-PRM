@@ -172,6 +172,21 @@ def job_get(job_id):
         return JOBS.get(job_id)
 
 
+def _run_build():
+    """Run a full build.py rebuild, surfacing stderr instead of hiding it.
+
+    Returns (ok, error). On failure `error` is the tail of build.py's stderr
+    (truncated to the last 2000 chars) so a background job can report WHY the
+    rebuild failed — `check=True` + `capture_output=True` would otherwise raise
+    and bury the traceback. Never raises for a non-zero exit."""
+    r = subprocess.run([sys.executable, os.path.join(HERE, "build.py")],
+                       cwd=HERE, capture_output=True, text=True)
+    if r.returncode != 0:
+        err = (r.stderr or r.stdout or "").strip()[-2000:]
+        return False, err or f"build.py exited with code {r.returncode}"
+    return True, ""
+
+
 # Duration (seconds) of the most recent successful /api/refresh, so the pre-
 # refresh modal can show a human estimate of how long the next one will take.
 REFRESH_STATE = {"last_seconds": None}
@@ -641,10 +656,15 @@ def create_filter():
                     fdef["keywords"] = route.get("keywords", [])
                 n = add_filter_def(fdef)
                 # Was semantic, now isn't: drop stale keys file + clear people tags.
+                # The rebuild surfaces build.py's stderr (no check=True) so a
+                # failed convert reports WHY instead of a bare CalledProcessError.
                 if os.path.exists(keys_path):
                     os.remove(keys_path)
-                    subprocess.run([sys.executable, os.path.join(HERE, "build.py")], cwd=HERE,
-                                   check=True, capture_output=True)
+                    ok, err = _run_build()
+                    if not ok:
+                        JOBS[job_id].update(state="error",
+                                            message=err or "build failed", error=err)
+                        return
                 JOBS[job_id].update(state="done", message="done",
                                     result={"name": name, "id": slug, "type": ftype,
                                             "matches": n, "warning": sanity_warning(n)})
@@ -1162,18 +1182,45 @@ def filter_exclude(fid):
 
 @app.route("/api/filter/<fid>", methods=["DELETE"])
 def delete_filter(fid):
+    # Sanitize: fid is a URL path segment that becomes a file path
+    # (filter_<safe>.json), so strip anything outside [a-z0-9-] first.
     safe = re.sub(r"[^a-z0-9-]", "", fid)
     filters = _load_filters()
     target = next((f for f in filters if f.get("id") == safe), None)
     filters = [f for f in filters if f.get("id") != safe]
+    # Persist the delete on the request thread so the change is durable before we
+    # return — only the (slow) rebuild moves to the background.
     _save_filters(filters)
-    # Semantic filters also have a keys file + people tags to clear.
     keys_path = os.path.join(HERE, f"data/enrich_parts/filter_{safe}.json")
-    if os.path.exists(keys_path):
-        os.remove(keys_path)
-        subprocess.run([sys.executable, os.path.join(HERE, "build.py")], cwd=HERE,
-                       check=True, capture_output=True)
-    return jsonify(ok=True, deleted=bool(target))
+    needs_rebuild = os.path.exists(keys_path)
+    if needs_rebuild:
+        os.remove(keys_path)  # semantic filters carry a keys file + people tags
+
+    # Nothing to rebuild (e.g. a category filter): the delete is already done.
+    if not needs_rebuild:
+        return jsonify(ok=True, deleted=bool(target))
+
+    # A semantic filter's people tags need a rebuild to clear. That can take many
+    # seconds, so run it as a background job (mirrors /api/refresh) and let the
+    # frontend poll /api/job/<id> instead of blocking the request thread.
+    job_id = uuid.uuid4().hex[:8]
+    job_set(job_id, {"state": "running", "done": 0, "total": 0,
+                     "message": "rebuilding", "result": None})
+
+    def run():
+        try:
+            ok, err = _run_build()
+            if not ok:
+                JOBS[job_id].update(state="error", message=err or "build failed",
+                                    error=err)
+                return
+            JOBS[job_id].update(state="done", message="done",
+                                result={"deleted": bool(target), "id": safe})
+        except Exception as exc:
+            JOBS[job_id].update(state="error", message=str(exc), error=str(exc))
+
+    threading.Thread(target=run, daemon=True).start()
+    return jsonify(ok=True, deleted=bool(target), job_id=job_id)
 
 
 if __name__ == "__main__":
