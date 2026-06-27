@@ -1045,77 +1045,84 @@ def main() -> None:
         """
     )
 
+    bad_rows = 0  # malformed message rows skipped instead of aborting the build
     for chat_id, handle_id, is_from_me, date_val, text, body, has_attach in rows:
         chat = chats.get(chat_id)
         if not chat:
             continue
-        is_group = chat["style"] == 43 or len(chat_members.get(chat_id, [])) > 1
+        # A single corrupt/unexpected row must never abort the whole build (and
+        # thus back up Refresh/Filter/Sync). Skip-and-count instead.
+        try:
+            is_group = chat["style"] == 43 or len(chat_members.get(chat_id, [])) > 1
 
-        if is_group:
-            key = f"g{chat_id}"
-            if key not in convos:
+            if is_group:
+                key = f"g{chat_id}"
+                if key not in convos:
+                    member_ids = chat_members.get(chat_id, [])
+                    labels = [contact_label(h) for h in member_ids]
+                    name = chat["display_name"] or ", ".join(
+                        l[0] for l in labels[:4]
+                    ) or chat["chat_identifier"] or "Group"
+                    c = get_convo(key, "group", name)
+                    c["members"] = [l[0] for l in labels]
+                else:
+                    c = convos[key]
+            else:
+                # 1:1 — identify the other party.
                 member_ids = chat_members.get(chat_id, [])
-                labels = [contact_label(h) for h in member_ids]
-                name = chat["display_name"] or ", ".join(
-                    l[0] for l in labels[:4]
-                ) or chat["chat_identifier"] or "Group"
-                c = get_convo(key, "group", name)
-                c["members"] = [l[0] for l in labels]
+                other = member_ids[0] if member_ids else handle_id
+                if other is None:
+                    continue
+                name, raw, in_contacts = contact_label(other)
+                key = "p" + norm_key(raw)
+                c = get_convo(key, "person", name, raw, in_contacts)
+                # Prefer a real contact name if we learn one later.
+                if in_contacts and not c["in_contacts"]:
+                    c["name"], c["in_contacts"], c["raw_id"] = name, True, raw
+
+            # Decode text.
+            plain = None
+            if text:
+                plain = text.decode("utf-8", "replace") if isinstance(text, bytes) else text
+                plain = plain or None
+            if not plain:
+                plain = decode_body(body)
+            if not plain:
+                if has_attach:
+                    plain = "[attachment]"
+                else:
+                    # Empty body with no attachment: a system event (someone added/
+                    # removed/renamed the group, etc.), not a real message. Skip it
+                    # entirely so it doesn't render as a blank bubble or keep an
+                    # otherwise-empty conversation alive.
+                    continue
+
+            if is_from_me:
+                c["sent"] += 1
             else:
-                c = convos[key]
-        else:
-            # 1:1 — identify the other party.
-            member_ids = chat_members.get(chat_id, [])
-            other = member_ids[0] if member_ids else handle_id
-            if other is None:
-                continue
-            name, raw, in_contacts = contact_label(other)
-            key = "p" + norm_key(raw)
-            c = get_convo(key, "person", name, raw, in_contacts)
-            # Prefer a real contact name if we learn one later.
-            if in_contacts and not c["in_contacts"]:
-                c["name"], c["in_contacts"], c["raw_id"] = name, True, raw
+                c["recv"] += 1
 
-        # Decode text.
-        plain = None
-        if text:
-            plain = text.decode("utf-8", "replace") if isinstance(text, bytes) else text
-            plain = plain or None
-        if not plain:
-            plain = decode_body(body)
-        if not plain:
-            if has_attach:
-                plain = "[attachment]"
-            else:
-                # Empty body with no attachment: a system event (someone added/
-                # removed/renamed the group, etc.), not a real message. Skip it
-                # entirely so it doesn't render as a blank bubble or keep an
-                # otherwise-empty conversation alive.
-                continue
-
-        if is_from_me:
-            c["sent"] += 1
-        else:
-            c["recv"] += 1
-
-        iso = apple_ns_to_iso(date_val)
-        sender = "me"
-        if is_group and not is_from_me:
-            s_name, s_raw, _ = contact_label(handle_id)
-            sender = s_name
-            # Credit the sender with group activity so their recency reflects it.
-            if s_raw:
-                gk = "p" + norm_key(s_raw)
-                if iso > group_active.get(gk, ""):
-                    group_active[gk] = iso
-        c["msgs"].append(
-            {
-                "me": bool(is_from_me),
-                "from": sender,
-                "text": plain,
-                "date": iso,
-            }
-        )
+            iso = apple_ns_to_iso(date_val)
+            sender = "me"
+            if is_group and not is_from_me:
+                s_name, s_raw, _ = contact_label(handle_id)
+                sender = s_name
+                # Credit the sender with group activity so their recency reflects it.
+                if s_raw:
+                    gk = "p" + norm_key(s_raw)
+                    if iso > group_active.get(gk, ""):
+                        group_active[gk] = iso
+            c["msgs"].append(
+                {
+                    "me": bool(is_from_me),
+                    "from": sender,
+                    "text": plain,
+                    "date": iso,
+                }
+            )
+        except Exception:  # noqa: BLE001 - one bad row must not abort the build
+            bad_rows += 1
+            continue
 
     conn.close()
 
@@ -1530,6 +1537,8 @@ def main() -> None:
     print(f"\nDone. Kept {kept} ({n_people} people, {n_groups} groups).")
     print(f"Removed: {dropped} junk, {excluded} feedback, {empty} empty, "
           f"{spam} opt-out spam, {alert} alerts.")
+    if bad_rows:
+        print(f"Skipped {bad_rows} malformed message row(s).")
     print(f"Auto spam/alert removals listed in {OUT}/filtered_out.json "
           f"(add a key to \"keep\" in data/exclude.json to rescue any).")
     print(f"Wrote {OUT}/people.json + {kept} conversation files.")
