@@ -419,7 +419,36 @@ function render() {
   renderBulkBar();
 
   rowsEl.innerHTML = rows.map(rowHtml).join("");
-  emptyEl.hidden = rows.length > 0;
+  renderEmpty(rows.length);
+}
+
+// Empty-state that distinguishes "a search/filter is active but matched nothing"
+// (offer a Clear action) from a fresh/blank table (hint to press Enter). Mirrors
+// the #clear link pattern so the action reuses the existing clear logic.
+function renderEmpty(n) {
+  emptyEl.hidden = n > 0;
+  if (n > 0) return;
+  const filterActive = !!(state.semantic || state.instantTokens.length ||
+    state.category || state.view === "lost");
+  if (filterActive) {
+    emptyEl.innerHTML =
+      `No matches for your current search/filter. ` +
+      `<a id="empty-clear">Clear</a>`;
+    const c = $("#empty-clear");
+    if (c) c.onclick = () => { clearActiveFilters(); };
+  } else {
+    emptyEl.innerHTML =
+      `No people to show. Type a name to filter, ` +
+      `or press Enter to search messages.`;
+  }
+}
+
+// Clear whatever is narrowing the table: the search, the category facet, and
+// any non-default view. Reuses clearSearch (which re-renders).
+function clearActiveFilters() {
+  state.category = null;
+  if (state.view === "lost") setView("recent");
+  clearSearch();   // clears search + instant tokens, then render()
 }
 
 function renderHeader() {
