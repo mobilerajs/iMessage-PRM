@@ -106,15 +106,25 @@ description is **routed** to the right evaluation tier (a structural rule vs. th
 reading conversations) — identity/topic descriptions correctly go semantic instead of
 becoming a broad keyword match — and matching people are assigned to it **exclusively**.
 
-### Fast hybrid semantic search
-Type a phrase ("people I ate pizza with", "lunch spots in palo alto") → a local
-**embedding index** (bge-small) over the **full conversation content, chunked** into
-~25-message windows retrieves the nearest chunks in ~3 ms, aggregates them to people, a
-soft **category prior** nudges ranking toward the query's likely category, and the
-model **confirms** the top candidates against the **matched chunk** with a relevance
-prompt (intent, not literal keyword match). ~2.5 s warm, vs ~2 min for the naive
-full-model scan it replaced. (Embedding the full content — not a short digest sample —
-is what makes in-passing topics actually findable.)
+### Fast hybrid search (keyword + semantic)
+Type a name to filter the table live; press **Enter** to search message **content**.
+Content search fuses two retrievers so both exact strings and paraphrased topics are
+findable:
+
+- **Keyword (literal).** A local **SQLite FTS5** index (`out/fts.db`) over the same
+  chunked conversation content gives BM25 ranking, phrase/boolean support, and a
+  keyword-anchored snippet. Wrap a query in **`"quotes"`** to force an exact-phrase
+  match (fast, no model needed).
+- **Semantic (intent).** A local **embedding index** (bge-small) over the full chunked
+  content retrieves nearest chunks in ~3 ms, aggregates them to people, and a soft
+  **category prior** nudges ranking toward the query's likely category.
+
+The two ranked lists are combined with **Reciprocal Rank Fusion**, then the local model
+**confirms** the top candidates against the **matched chunk** with a relevance prompt
+(intent, not literal keyword match). The result adds a **Match** column showing the exact
+bit of thread that matched. ~2.5 s warm for the fused path; quoted/literal queries return
+in milliseconds. (Embedding the full content — not a short digest sample — plus the
+keyword index is what makes both in-passing topics and exact strings findable.)
 
 ### Relationship tooling
 - **Name inference → Contacts** — suggests full names for bare numbers and writes them
@@ -143,12 +153,15 @@ changed are re-embedded, so a no-op refresh is ~2 s instead of re-embedding ever
 chat.db (read-only) ─┐
 contacts.vcf ────────┼─► build.py ──► out/people.json        (the index)
                      │               out/messages/<id>.json  (lazy-loaded threads)
-data/enrich_parts/ ──┘               out/embeddings.npy      (search index)
+data/enrich_parts/ ──┘               out/embeddings.npy      (semantic index)
+                                     out/fts.db              (keyword/FTS5 index)
                                      out/filters.json        (categories)
 
+appconfig.py  settings resolver: env var > config.json > built-in default
 classify.py   local Qwen3-4B (MLX): category/work/family judgments, filter routing,
               semantic confirm, name inference
-embeddings.py local bge-small (MLX): build the search index + cosine retrieval
+embeddings.py local bge-small (MLX): build the semantic index + cosine retrieval
+keyword_search.py  SQLite FTS5 keyword search + reciprocal-rank fusion (no model)
 server.py     Flask: serves the app, keeps the model warm, exposes the API
               (/api/search, /api/filter, /api/contacts/*, /api/userstate,
                /api/refresh, /api/refresh/estimate, …); static routes are
@@ -190,15 +203,18 @@ servers).
 
 This is a first pass; these are known, deliberate gaps:
 
-- **No formal evals.** Classification quality was checked by hand-labeled spot-checks
+- **Evals are early.** Classification quality was checked by hand-labeled spot-checks
   (e.g. the work/personal prompt was tuned against ~130 labels, ~68% precision / ~75%
-  recall), not a maintained eval harness. There's no regression eval for search
-  relevance or category accuracy.
-- **Light test coverage.** 77 unit tests cover the *pure* logic (read-only DB open,
+  recall). There's now a **search eval harness** in `tests/eval/` (recall@k /
+  precision@k / MRR over a per-query-type gold set, with a baseline regression check),
+  but the gold set is local/gitignored (it references real conversation keys) — only a
+  synthetic, PII-free fixture is committed. Category accuracy still has no regression eval.
+- **Light test coverage.** 100+ unit tests cover the *pure* logic (read-only DB open,
   category partition/priority, family veto, search re-rank, chunking/aggregation,
-  filter routing, incremental embedding reuse, refresh estimate). The
-  integration surfaces — Flask endpoints, AppleScript/Contacts, the model passes, the
-  frontend — are **not** covered by automated tests and were verified manually.
+  filter routing, keyword/FTS + RRF fusion, incremental embedding reuse, group-aware
+  recency, UTC timestamps, phone-key normalization, eval metrics). The integration
+  surfaces — Flask endpoints, AppleScript/Contacts, the model passes, the frontend —
+  are **not** covered by automated tests and were verified manually.
 - **Uses a copy of `chat.db`, not the live database** for the build. The **Refresh**
   button snapshots the live DB on demand (read-only backup API), but there's no
   background poller and no installer — refresh is a manual click.
@@ -260,12 +276,15 @@ iteration.
 |------|---------|
 | `build.py` | Pipeline: chat.db + vCard → `out/` (people, threads, embeddings, categories) |
 | `classify.py` | Local-model passes: category/work/family, filter routing, semantic confirm, names |
-| `embeddings.py` | Local embedding index + cosine retrieval (hybrid search) |
+| `embeddings.py` | Local embedding index + cosine retrieval (semantic search) |
+| `keyword_search.py` | SQLite FTS5 keyword search + reciprocal-rank fusion (no model) |
+| `appconfig.py` | Settings resolver: env var > config.json > default |
 | `server.py` | Flask: UI + warm model + API |
 | `imessage_db.py` | Read-only/immutable chat.db open + backup |
 | `typedstream_text.py` | Decodes message text from `attributedBody` |
 | `index.html` · `app.js` · `styles.css` | The local web view |
 | `tests/` | Unit tests (pure logic) — `pytest -q` |
+| `tests/eval/` | Search eval harness (recall@k/precision@k/MRR; gold set gitignored) |
 | `docs/plans/` · `docs/spikes/` | Design docs + de-risking spikes |
 | `data/` · `out/` | Your source data + generated data (both gitignored) |
 
