@@ -154,6 +154,24 @@ app = Flask(__name__, static_folder=None)
 STATE = {"model": None, "tok": None, "loading": True, "error": None}
 JOBS = {}  # job_id -> {state, done, total, message, result}
 FILTER_JOB = {}  # filter id -> latest job_id; lets a new run supersede an in-flight one
+JOBS_MAX = 50
+_JOBS_LOCK = threading.Lock()
+
+
+def job_set(job_id, value):
+    with _JOBS_LOCK:
+        JOBS[job_id] = value
+        if len(JOBS) > JOBS_MAX:
+            # Evict oldest insertion-order keys (dicts preserve order).
+            for k in list(JOBS)[: len(JOBS) - JOBS_MAX]:
+                JOBS.pop(k, None)
+
+
+def job_get(job_id):
+    with _JOBS_LOCK:
+        return JOBS.get(job_id)
+
+
 # Duration (seconds) of the most recent successful /api/refresh, so the pre-
 # refresh modal can show a human estimate of how long the next one will take.
 REFRESH_STATE = {"last_seconds": None}
@@ -162,7 +180,8 @@ REFRESH_STATE = {"last_seconds": None}
 def _superseded(fid, job_id):
     """True if a newer model job has started for this filter — if so the caller
     should drop its (now stale) result instead of writing it."""
-    return FILTER_JOB.get(fid) != job_id
+    with _JOBS_LOCK:
+        return FILTER_JOB.get(fid) != job_id
 
 
 def _load_model():
@@ -561,7 +580,7 @@ def create_filter():
         return jsonify(error="name required"), 400
 
     job_id = uuid.uuid4().hex[:8]
-    JOBS[job_id] = {"state": "running", "done": 0, "total": 0, "message": "starting", "result": None}
+    job_set(job_id, {"state": "running", "done": 0, "total": 0, "message": "starting", "result": None})
 
     def run():
         try:
@@ -575,7 +594,8 @@ def create_filter():
             if not slug:
                 JOBS[job_id].update(state="error", message="invalid filter id")
                 return
-            FILTER_JOB[slug] = job_id  # claim this filter; supersede any in-flight run
+            with _JOBS_LOCK:
+                FILTER_JOB[slug] = job_id  # claim this filter; supersede any in-flight run
             existing = next((f for f in _load_filters() if f.get("id") == slug), None)
             keys_path = os.path.join(HERE, f"data/enrich_parts/filter_{slug}.json")
 
@@ -759,7 +779,7 @@ def contacts_sync():
     every contact's name + phones + emails, rebuilds the phone/email -> name map,
     and re-runs build. Slow for large address books, so it's a background job."""
     job_id = uuid.uuid4().hex[:8]
-    JOBS[job_id] = {"state": "running", "done": 0, "total": 0, "message": "reading Contacts (this can take a minute)", "result": None}
+    job_set(job_id, {"state": "running", "done": 0, "total": 0, "message": "reading Contacts (this can take a minute)", "result": None})
 
     def run():
         try:
@@ -865,7 +885,7 @@ def infer_names():
     if STATE["loading"]:
         return jsonify(error="model still loading"), 503
     job_id = uuid.uuid4().hex[:8]
-    JOBS[job_id] = {"state": "running", "done": 0, "total": 0, "message": "inferring names", "result": None}
+    job_set(job_id, {"state": "running", "done": 0, "total": 0, "message": "inferring names", "result": None})
 
     def run():
         try:
@@ -939,8 +959,8 @@ def refresh():
     The job: snapshot -> rebuild -> read out/stats.json for last_synced. Uses
     sys.executable (never bare python3). Fully local/offline."""
     job_id = uuid.uuid4().hex[:8]
-    JOBS[job_id] = {"state": "running", "done": 0, "total": 0,
-                    "message": "snapshotting", "result": None}
+    job_set(job_id, {"state": "running", "done": 0, "total": 0,
+                     "message": "snapshotting", "result": None})
 
     def run():
         try:
@@ -1023,7 +1043,7 @@ def refresh_estimate():
 
 @app.route("/api/job/<job_id>")
 def job_status(job_id):
-    j = JOBS.get(job_id)
+    j = job_get(job_id)
     if not j:
         return jsonify(error="unknown job"), 404
     return jsonify(j)
@@ -1060,8 +1080,9 @@ def filter_refine(fid):
         return jsonify(error="No corrections yet — remove or move a few wrong matches first."), 400
 
     job_id = uuid.uuid4().hex[:8]
-    JOBS[job_id] = {"state": "running", "done": 0, "total": 0, "message": "refining", "result": None}
-    FILTER_JOB[fid] = job_id  # claim this filter; supersede any in-flight run
+    job_set(job_id, {"state": "running", "done": 0, "total": 0, "message": "refining", "result": None})
+    with _JOBS_LOCK:
+        FILTER_JOB[fid] = job_id  # claim this filter; supersede any in-flight run
 
     def run():
         try:
