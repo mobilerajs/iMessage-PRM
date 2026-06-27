@@ -61,18 +61,20 @@ APPLE_EPOCH = 978307200  # seconds between 1970-01-01 and 2001-01-01
 # --------------------------------------------------------------------------- #
 def norm_key(raw: str) -> str:
     """Canonical key for matching a handle id to a contact.
-
-    Emails -> lowercased as-is. Phone numbers -> last 10 digits (drops country
-    code and all formatting) so "+1 (555) 123-4567" and "5551234567" match.
-    """
+    Emails -> lowercased. NANP numbers (US/Canada: 10 digits, or 11 starting
+    with 1) -> last 10 digits (so "+1 (555) 123-4567" == "5551234567"). Other
+    international numbers keep their FULL normalized digits to avoid last-10
+    collisions across country codes. Short codes stay as-is."""
     if not raw:
         return ""
     if "@" in raw:
         return raw.strip().lower()
     digits = re.sub(r"\D", "", raw)
-    if len(digits) >= 10:
-        return digits[-10:]
-    return digits  # short codes etc. stay as-is
+    if len(digits) == 10:
+        return digits
+    if len(digits) == 11 and digits.startswith("1"):
+        return digits[1:]
+    return digits  # intl (keep country code) / short codes
 
 
 def is_shortcode(raw: str) -> bool:
