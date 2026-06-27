@@ -815,6 +815,92 @@ def apple_ns_to_iso(date_val: int) -> str:
     return _dt.datetime.fromtimestamp(secs + APPLE_EPOCH).isoformat(timespec="seconds")
 
 
+# --------------------------------------------------------------------------- #
+# Incremental embedding cache
+#
+# A full rebuild re-embeds ALL chunks (~43s for ~4.5k chunks) even when almost
+# nothing changed. We persist a per-conversation SIGNATURE map alongside the
+# index (out/embed_sig.json = {key: sig}); on the next build, conversations whose
+# signature is unchanged reuse their cached chunk vectors + texts and only
+# new/changed conversations are re-embedded. The reuse decision is the pure
+# embeddings.partition_reuse(); these helpers are the thin I/O + signature glue.
+# NOTE: this makes EMBEDDING (and classification, below) incremental — the
+# message PARSE is still full every run (a ROWID delta-read is a separate layer).
+# --------------------------------------------------------------------------- #
+EMBED_SIG_PATH = os.path.join(OUT, "embed_sig.json")
+
+
+def build_signatures(convo_msgs) -> dict:
+    """{key: signature} for everything being indexed this run.
+
+    `convo_msgs` is the list of (key, msgs) assembled during the main loop. The
+    signature is derived from message count + the latest message's date, both of
+    which change when a conversation gains a message.
+    """
+    import embeddings as _embeddings
+    sigs = {}
+    for key, msgs in convo_msgs:
+        last_date = msgs[-1]["date"] if msgs else ""
+        sigs[key] = _embeddings.convo_signature(len(msgs), last_date)
+    return sigs
+
+
+def load_prev_signatures(path: str = EMBED_SIG_PATH) -> dict:
+    """Load the prior run's {key: sig} map, or {} if missing/unreadable.
+
+    A missing or corrupt map means "treat everything as new" -> full embed,
+    which is the correct graceful fallback for a first run or a format change.
+    """
+    if not os.path.exists(path):
+        return {}
+    try:
+        data = json.load(open(path, encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception as exc:
+        print(f"  ! could not read {path}: {exc}; treating all convos as new.")
+        return {}
+
+
+def invalidate_changed_verdicts(new_sigs: dict, prev_sigs: dict) -> int:
+    """Drop changed-signature keys from the classification verdict caches so they
+    get re-judged this run. Unchanged keys keep their cached verdict.
+
+    A conversation whose signature changed has new messages, so its cached
+    work/personal + family verdicts may be stale. We delete ONLY those keys from
+    data/enrich_parts/work_personal.json and data/family_judge.json (minimal +
+    safe). Brand-new keys aren't in the caches yet, so nothing to drop there.
+    Returns the number of cache entries removed across both files.
+    """
+    # Keys present last run whose signature differs this run = changed convos.
+    changed = {k for k, sig in new_sigs.items()
+               if k in prev_sigs and prev_sigs[k] != sig}
+    if not changed:
+        return 0
+    removed = 0
+    for cache_path in (WORK_JUDGE_CACHE, FAMILY_JUDGE_CACHE):
+        if not os.path.exists(cache_path):
+            continue
+        try:
+            cache = json.load(open(cache_path, encoding="utf-8"))
+        except Exception as exc:
+            print(f"  ! could not read {cache_path} for invalidation: {exc}")
+            continue
+        if not isinstance(cache, dict):
+            continue
+        drop = [k for k in changed if k in cache]
+        if not drop:
+            continue
+        for k in drop:
+            del cache[k]
+            removed += 1
+        json.dump(cache, open(cache_path, "w", encoding="utf-8"),
+                  ensure_ascii=False, indent=0)
+    if removed:
+        print(f"  incremental: invalidated {removed} stale classification "
+              f"verdict(s) for {len(changed)} changed convo(s).")
+    return removed
+
+
 def load_handles(conn) -> dict[int, str]:
     return {rid: hid for rid, hid in conn.execute("SELECT ROWID, id FROM handle")}
 
@@ -1192,6 +1278,16 @@ def main() -> None:
     # Set CRM_SKIP_WORKJUDGE=1 to skip the model entirely (e.g. fast/test builds);
     # without verdicts, Personal people simply stay Personal (unsure=False).
     # ------------------------------------------------------------------- #
+    # Incremental signatures: compare this run's per-conversation signatures to
+    # the prior run's (out/embed_sig.json). Changed-signature conversations have
+    # new messages, so their cached work/personal + family verdicts may be stale
+    # — drop ONLY those keys from the verdict caches so they get re-judged below.
+    # Unchanged keys stay cached. (The same prev/new sig comparison drives the
+    # incremental embed step further down.) These are computed once and reused.
+    new_sigs = build_signatures(convo_msgs)
+    prev_sigs = load_prev_signatures()
+    invalidate_changed_verdicts(new_sigs, prev_sigs)
+
     digest_by_key = {d["key"]: d for d in digests}
     personal_people = [p for p in people
                        if p["kind"] == "person" and p["category"] == "Personal"]
@@ -1250,6 +1346,9 @@ def main() -> None:
     CHUNK_WINDOW = 25         # messages per chunk window
     CHUNK_MAX_MESSAGES = 2000  # most-recent messages considered per conversation
     CHUNK_MAX_CHUNKS = 60      # max chunks per conversation (even-sampled if over)
+    npy_path = os.path.join(OUT, "embeddings.npy")
+    keys_path = os.path.join(OUT, "embedding_keys.json")
+    chunks_path = os.path.join(OUT, "embedding_chunks.json")
     if os.environ.get("CRM_SKIP_EMBED") == "1":
         print("  embeddings: CRM_SKIP_EMBED=1 — skipping index build.")
     elif convo_msgs:
@@ -1257,25 +1356,106 @@ def main() -> None:
         import numpy as np
         import embeddings as _embeddings
         t0 = _time.time()
-        # Build chunk rows: parallel lists of (key, chunk_text).
-        chunk_keys = []
-        chunk_texts = []
+
+        # --- Incremental reuse: load the prior index and decide per convo ----
+        # Build a per-key map of the OLD index's chunk rows (vectors) + texts so
+        # an unchanged conversation can be copied wholesale instead of re-embedded.
+        # Any failure to load a consistent old index -> old_by_key stays empty,
+        # so EVERY convo re-embeds (the graceful full-build fallback: first run,
+        # shape mismatch, or a format change).
+        old_by_key: dict = {}   # key -> (list_of_vector_rows, list_of_chunk_texts)
+        try:
+            if (os.path.exists(npy_path) and os.path.exists(keys_path)
+                    and os.path.exists(chunks_path)):
+                old_matrix = np.load(npy_path)
+                old_keys = json.load(open(keys_path, encoding="utf-8"))
+                old_chunks = json.load(open(chunks_path, encoding="utf-8"))
+                # All three artifacts MUST be row-parallel, or the old index is
+                # untrustworthy -> fall back to a full embed.
+                if (old_matrix.ndim == 2
+                        and old_matrix.shape[0] == len(old_keys) == len(old_chunks)):
+                    for i, k in enumerate(old_keys):
+                        slot = old_by_key.setdefault(k, ([], []))
+                        slot[0].append(old_matrix[i])
+                        slot[1].append(old_chunks[i])
+                else:
+                    print("  embeddings: prior index shape mismatch — full re-embed.")
+        except Exception as exc:
+            print(f"  embeddings: could not load prior index ({exc}) — full re-embed.")
+            old_by_key = {}
+
+        # Reuse decision is the pure partition over signatures. With no usable old
+        # index, prev_sigs may still exist but old_by_key is empty, so a "reuse"
+        # key with no cached rows is re-embedded anyway (handled in the loop).
+        reuse_keys, reembed_keys = _embeddings.partition_reuse(new_sigs, prev_sigs)
+        reuse_set = set(reuse_keys)
+
+        # --- Plan the assembly in ONE pass over convo_msgs --------------------
+        # `plan` is a row-ordered list of ("reuse", vector) or ("embed", text)
+        # entries; chunk_keys / chunk_texts are built parallel to it. We embed the
+        # collected "embed" texts in a single batched call, then materialize the
+        # matrix by walking the plan once — no second chunking pass, and the row
+        # order provably matches chunk_keys/chunk_texts.
+        chunk_keys: list = []
+        chunk_texts: list = []
+        plan: list = []             # per row: ("reuse", vec) | ("embed", text)
+        to_embed_texts: list = []   # texts needing a fresh embedding (batched)
+        n_reused_convos = n_reembed_convos = n_reused_chunks = 0
         for key, msgs in convo_msgs:
-            for ctext in _embeddings.chunk_messages(
-                    msgs, window=CHUNK_WINDOW,
-                    max_messages=CHUNK_MAX_MESSAGES, max_chunks=CHUNK_MAX_CHUNKS):
-                chunk_keys.append(key)
-                chunk_texts.append(ctext)
-        print(f"  embeddings: chunking {len(convo_msgs)} convos -> "
-              f"{len(chunk_texts)} chunks (window {CHUNK_WINDOW} msgs, cap "
-              f"{CHUNK_MAX_CHUNKS}/convo); embedding...")
-        matrix = _embeddings.embed_texts(chunk_texts)
+            cached = old_by_key.get(key)
+            if key in reuse_set and cached and cached[1]:
+                # Reuse this conversation's cached chunk vectors + texts verbatim.
+                for vec, ctext in zip(cached[0], cached[1]):
+                    chunk_keys.append(key)
+                    chunk_texts.append(ctext)
+                    plan.append(("reuse", vec))
+                    n_reused_chunks += 1
+                n_reused_convos += 1
+            else:
+                # New / changed convo (or no cached rows) -> re-chunk + re-embed.
+                for ctext in _embeddings.chunk_messages(
+                        msgs, window=CHUNK_WINDOW,
+                        max_messages=CHUNK_MAX_MESSAGES, max_chunks=CHUNK_MAX_CHUNKS):
+                    chunk_keys.append(key)
+                    chunk_texts.append(ctext)
+                    plan.append(("embed", ctext))
+                    to_embed_texts.append(ctext)
+                n_reembed_convos += 1
+
+        print(f"  embeddings: {len(convo_msgs)} convos -> reuse {n_reused_convos}, "
+              f"re-embed {n_reembed_convos} ({len(to_embed_texts)} new/changed "
+              f"chunks, {n_reused_chunks} reused); embedding...")
+        fresh = _embeddings.embed_texts(to_embed_texts)  # (M, d) or (0, 0)
+
+        # Materialize the matrix by walking the plan once, drawing fresh rows in
+        # order. Row i corresponds exactly to chunk_keys[i] / chunk_texts[i].
+        if not plan:
+            matrix = np.zeros((0, 0), dtype=np.float32)
+        else:
+            if n_reused_chunks:
+                dim = int(np.asarray(plan[next(
+                    i for i, e in enumerate(plan) if e[0] == "reuse")][1]).shape[0])
+            elif fresh.ndim == 2 and fresh.shape[0] > 0:
+                dim = int(fresh.shape[1])
+            else:
+                dim = 0
+            matrix = np.empty((len(plan), dim), dtype=np.float32)
+            fi = 0  # cursor into freshly-embedded rows
+            for row, (kind, payload) in enumerate(plan):
+                if kind == "reuse":
+                    matrix[row] = np.asarray(payload, dtype=np.float32)
+                else:
+                    matrix[row] = fresh[fi]
+                    fi += 1
+
+        # Consistency assertion: matrix rows ↔ keys ↔ chunk texts, all parallel.
+        assert matrix.shape[0] == len(chunk_keys) == len(chunk_texts), (
+            f"index inconsistency: matrix {matrix.shape[0]} rows, "
+            f"{len(chunk_keys)} keys, {len(chunk_texts)} chunks")
+
         # Snapshot any prior index before overwriting (out/ is gitignored, but a
         # rebuild shouldn't silently clobber a working index).
-        npy_path = os.path.join(OUT, "embeddings.npy")
-        keys_path = os.path.join(OUT, "embedding_keys.json")
-        chunks_path = os.path.join(OUT, "embedding_chunks.json")
-        for p in (npy_path, keys_path, chunks_path):
+        for p in (npy_path, keys_path, chunks_path, EMBED_SIG_PATH):
             if os.path.exists(p):
                 import shutil
                 shutil.copy2(p, p + ".bak")
@@ -1284,6 +1464,11 @@ def main() -> None:
             json.dump(chunk_keys, f, ensure_ascii=False)
         with open(chunks_path, "w", encoding="utf-8") as f:
             json.dump(chunk_texts, f, ensure_ascii=False)
+        # Persist the signature map for ALL indexed convos so the next build can
+        # reuse against it. (Only convos actually in the index are written.)
+        indexed_sigs = {k: new_sigs[k] for k in set(chunk_keys) if k in new_sigs}
+        with open(EMBED_SIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(indexed_sigs, f, ensure_ascii=False)
         print(f"  embeddings: indexed {matrix.shape[0]} chunks "
               f"(dim {matrix.shape[1] if matrix.ndim == 2 else 0}) in "
               f"{_time.time() - t0:.1f}s -> {npy_path}")

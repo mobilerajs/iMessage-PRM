@@ -138,6 +138,49 @@ def chunk_messages(msgs, window=25, max_messages=2000, max_chunks=60):
     return [c for c in chunks if c]
 
 
+# ---- incremental embedding cache -------------------------------------------
+# Re-embedding ALL chunks every build is wasteful when almost nothing changed.
+# We give each conversation a cheap SIGNATURE and persist a {key: sig} map next
+# to the index. On the next build, a conversation whose signature is unchanged
+# REUSES its cached chunk vectors + texts; only new/changed ones are re-embedded.
+# Both helpers are pure (no model, no I/O) so they are the TDD target.
+
+
+def convo_signature(count, last_date) -> str:
+    """A stable, comparable signature for one conversation.
+
+    Derived from message `count` and the `last_date` of the latest message —
+    both already known at build time. A new message changes count and/or
+    last_date, so the signature changes and the conversation is re-embedded;
+    an untouched conversation keeps the same signature and is reused.
+
+    Returns a JSON-safe string (the sig map is persisted to embed_sig.json).
+    """
+    return f"{int(count)}|{last_date or ''}"
+
+
+def partition_reuse(new_sigs: dict, old_sigs: dict):
+    """Decide, per conversation key, reuse vs re-embed for this build.
+
+    `new_sigs` is {key: sig} for everything being indexed THIS run; `old_sigs`
+    is the prior run's persisted {key: sig}. Returns (reuse_keys, reembed_keys):
+
+      - key in old AND new_sig == old_sig  -> REUSE  (cached vectors + texts)
+      - key absent from old, OR sig differs -> REEMBED (new or changed convo)
+      - key in old but absent from new      -> DROPPED (in neither list)
+
+    The two returned lists are disjoint and together cover exactly new_sigs'
+    keys, so the reassembled index stays internally consistent.
+    """
+    reuse, reembed = [], []
+    for key, sig in new_sigs.items():
+        if key in old_sigs and old_sigs[key] == sig:
+            reuse.append(key)
+        else:
+            reembed.append(key)
+    return reuse, reembed
+
+
 def aggregate_chunks_to_persons(hits):
     """Collapse chunk-level hits to one best (score, chunk-text) per person key.
 
