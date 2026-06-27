@@ -25,9 +25,11 @@ import os
 
 import numpy as np
 
+import appconfig
+
 # Default to the MLX-native BGE small model. Overridable for experiments, but the
 # index and the query MUST use the same model (same vector space).
-EMBED_MODEL = os.environ.get("CRM_EMBED_MODEL", "mlx-community/bge-small-en-v1.5-bf16")
+EMBED_MODEL = appconfig.resolve("embed_model", "CRM_EMBED_MODEL", "mlx-community/bge-small-en-v1.5-bf16")
 
 # Token budget per text. bge-small is a 512-token model; conversation digests are
 # short, so 512 is plenty and keeps batches fast.

@@ -14,8 +14,10 @@ conversation and store matches as a tag, so the UI can offer a chip for it.
 import json, os, sys, time, glob, re
 from mlx_lm import load, generate
 
+import appconfig
+
 HERE = os.path.dirname(os.path.abspath(__file__))
-MODEL = os.environ.get("CRM_MODEL", "mlx-community/Qwen3-4B-Instruct-2507-4bit")
+MODEL = appconfig.resolve("model", "CRM_MODEL", "mlx-community/Qwen3-4B-Instruct-2507-4bit")
 ENRICH = os.path.join(HERE, "data/enrich_parts/local.json")
 DIGESTS = os.path.join(HERE, "out/digests.json")
 VCF = os.path.join(HERE, "data/contacts.vcf")
@@ -28,13 +30,7 @@ CATS = ["Service", "Personal"]
 
 def user_identity():
     """Owner of the phone. Priority: env CRM_USER > config.json > vCard first card."""
-    name = os.environ.get("CRM_USER", "")
-    cfg = os.path.join(HERE, "config.json")
-    if not name and os.path.exists(cfg):
-        try:
-            name = (json.load(open(cfg)).get("user_name") or "").strip()
-        except Exception:
-            pass
+    name = (appconfig.resolve("user_name", "CRM_USER", "") or "").strip()
     if not name and os.path.exists(VCF):
         with open(VCF, encoding="utf-8", errors="replace") as fh:
             for line in fh:

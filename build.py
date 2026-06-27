@@ -30,6 +30,7 @@ import re
 import sqlite3
 from collections import defaultdict
 
+import appconfig
 import imessage_db
 
 from typedstream_text import decode as decode_body
@@ -45,8 +46,8 @@ OUT = os.path.join(HERE, "out")
 #
 # Reading the live ~/Library/Messages/chat.db requires Full Disk Access for the
 # terminal. The database is opened strictly read-only either way.
-DB_PATH = os.path.expanduser(os.environ.get("CHAT_DB", os.path.join(DATA, "chat.db")))
-VCF_PATH = os.path.expanduser(os.environ.get("CONTACTS_VCF", os.path.join(DATA, "contacts.vcf")))
+DB_PATH = os.path.expanduser(appconfig.resolve("chat_db", "CHAT_DB", os.path.join(DATA, "chat.db")))
+VCF_PATH = os.path.expanduser(appconfig.resolve("contacts_vcf", "CONTACTS_VCF", os.path.join(DATA, "contacts.vcf")))
 EXCLUDE_PATH = os.path.expanduser(os.environ.get("EXCLUDE_FILE", os.path.join(DATA, "exclude.json")))
 ENRICH_PATH = os.path.expanduser(os.environ.get("ENRICH_FILE", os.path.join(DATA, "enrichment.json")))
 
