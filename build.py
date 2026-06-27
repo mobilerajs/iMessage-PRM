@@ -813,14 +813,19 @@ def parse_vcard(path: str):
 # --------------------------------------------------------------------------- #
 # Database extraction
 # --------------------------------------------------------------------------- #
-def apple_ns_to_iso(date_val: int) -> str:
-    """Apple timestamp (ns or s since 2001) -> ISO date string."""
-    if date_val is None:
-        return ""
-    secs = date_val / 1e9 if date_val > 1_000_000_000_000 else float(date_val)
+def apple_ns_to_iso(date_val) -> str:
+    """Apple timestamp (ns or s since 2001-01-01 UTC) -> ISO-8601 UTC string.
+    Returns "" for missing/garbage values so one bad row never aborts a build."""
     import datetime as _dt
-
-    return _dt.datetime.fromtimestamp(secs + APPLE_EPOCH).isoformat(timespec="seconds")
+    try:
+        if date_val is None:
+            return ""
+        date_val = int(date_val)
+        secs = date_val / 1e9 if date_val > 1_000_000_000_000 else float(date_val)
+        return _dt.datetime.fromtimestamp(
+            secs + APPLE_EPOCH, tz=_dt.timezone.utc).isoformat(timespec="seconds")
+    except (ValueError, OverflowError, OSError, TypeError):
+        return ""
 
 
 def merge_recency(last_1to1: str, group_iso: str) -> str:
