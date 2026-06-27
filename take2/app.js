@@ -500,9 +500,20 @@ function openCategoryPopover(anchor, key) {
     `<div class="po-sep"></div><div class="po-item po-new">+ New category…</div>`;
   document.body.appendChild(popoverEl);
 
+  // Position below the pill, but flip above / clamp horizontally so it never
+  // runs off the viewport (rows near the bottom or right edge).
   const r = anchor.getBoundingClientRect();
-  popoverEl.style.top = (window.scrollY + r.bottom + 4) + "px";
-  popoverEl.style.left = (window.scrollX + r.left) + "px";
+  const pw = popoverEl.offsetWidth, ph = popoverEl.offsetHeight, m = 8;
+  let left = r.left;
+  if (left + pw > window.innerWidth - m) left = window.innerWidth - pw - m;
+  if (left < m) left = m;
+  let top = r.bottom + 4;
+  if (top + ph > window.innerHeight - m) {
+    const above = r.top - ph - 4;
+    top = above >= m ? above : Math.max(m, window.innerHeight - ph - m);
+  }
+  popoverEl.style.top = (window.scrollY + top) + "px";
+  popoverEl.style.left = (window.scrollX + left) + "px";
 
   popoverEl.addEventListener("click", async (e) => {
     const item = e.target.closest(".po-item");

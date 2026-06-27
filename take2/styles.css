@@ -207,3 +207,6 @@ td.col-count { color: var(--text); font-variant-numeric: tabular-nums; }
 /* Whole Match cell is the click target (expand/collapse). */
 td.col-match { cursor: pointer; }
 td.col-match .snip { display: block; }
+
+/* Keep a long category popover within the viewport. */
+.popover { max-height: 70vh; overflow-y: auto; }
