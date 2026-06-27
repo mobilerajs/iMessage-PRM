@@ -428,9 +428,17 @@ def semantic_search():
                                         system=classify.search_prompt(q))
         # Round affinity for a compact, stable JSON payload.
         affinity = {c: round(s, 4) for c, s in (affinity or {}).items()}
+        # Per-result matched snippet: the chunk that actually matched the query
+        # (the same text the LLM confirmed on), so the UI can show WHY each person
+        # surfaced and let the user expand it. Keyed by conversation key.
+        snippets = {}
+        if cands:
+            by_key = {d["key"]: (d.get("__text") or "") for d in cands}
+            snippets = {k: by_key.get(k, "") for k in keys}
         return jsonify(keys=keys, n=len(keys),
                        ms=round((time.time() - t0) * 1000, 1),
-                       category_hint=category_hint, affinity=affinity)
+                       category_hint=category_hint, affinity=affinity,
+                       snippets=snippets)
     except Exception as exc:
         return jsonify(error=str(exc)), 500
 

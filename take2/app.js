@@ -20,8 +20,9 @@ const state = {
   // Search modes: "" = none, instant filter applied live from box; semantic =
   // server keys after Enter.
   instantTokens: [],  // live name-prefix tokens (client-side)
-  semantic: null,     // { q, keys:Set, n, ms } when a semantic search is active
+  semantic: null,     // { q, keys:Set, n, ms, snippets, terms } when active
   selected: new Set(),// keys of person rows selected for bulk category move
+  expanded: new Set(),// keys whose Match snippet is expanded to the full chunk
 };
 
 const LS_HIDE_UNNAMED = "imsg_crm2_hide_unnamed";
@@ -109,6 +110,20 @@ const groupsEl = $("#show-groups");
 const hideUnnamedEl = $("#hide-unnamed");
 const theadEl = $("#grid thead");
 const bulkbarEl = $("#bulkbar");
+const countsEl = $("#counts");
+
+/* Library counts under the title: people / groups / filtered-out, so it's clear
+   the table is the kept set (junk filtered) and groups are toggled, not missing. */
+function renderCounts() {
+  if (!countsEl) return;
+  const people = state.all.filter((p) => p.kind === "person").length;
+  const groups = state.all.filter((p) => p.kind === "group").length;
+  const parts = [`${people.toLocaleString()} people`,
+    `${groups.toLocaleString()} groups ${state.showGroups ? "shown" : "hidden"}`];
+  const f = state.stats && state.stats.filtered;
+  if (f && typeof f.total === "number") parts.push(`${f.total.toLocaleString()} filtered out`);
+  countsEl.textContent = parts.join(" · ");
+}
 
 /* ---------------- Helpers ---------------- */
 function escapeHtml(s) {
@@ -143,6 +158,40 @@ function lastTs(p) {
 // A person row that's just a bare number with no name help.
 function isUnnamed(p) {
   return p.kind === "person" && !p.in_contacts && !p.suggested_name;
+}
+
+/* ---- Match-snippet rendering (semantic mode only) ---- */
+const SNIP_MAX = 90; // truncated length, ~1 line
+
+// True when the table is showing the dynamic "Match" column.
+function semanticActive() { return !!state.semantic; }
+
+// Escape, then bold the query terms inside an already-escaped string.
+function highlightTerms(escaped, terms) {
+  if (!terms || !terms.length) return escaped;
+  // Build one alternation of escaped terms; match case-insensitively on the
+  // (HTML-escaped) text. Terms are alphanumeric tokens, so no regex specials.
+  const pat = terms
+    .filter((t) => t.length >= 2)
+    .map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|");
+  if (!pat) return escaped;
+  return escaped.replace(new RegExp("(" + pat + ")", "gi"), "<b>$1</b>");
+}
+
+// Truncated snippet: collapse newlines/whitespace to single spaces, cap length.
+function snippetTruncatedHtml(text, terms) {
+  const flat = String(text || "").replace(/\s+/g, " ").trim();
+  if (!flat) return "";
+  const cut = flat.length > SNIP_MAX ? flat.slice(0, SNIP_MAX).trimEnd() + "…" : flat;
+  return highlightTerms(escapeHtml(cut), terms);
+}
+
+// Full snippet: preserve line breaks (rendered via CSS white-space: pre-wrap).
+function snippetFullHtml(text, terms) {
+  const t = String(text || "").trim();
+  if (!t) return "";
+  return highlightTerms(escapeHtml(t), terms);
 }
 
 /* ---------------- Shared-state load / persist (mirrors classic) ---------------- */
@@ -208,6 +257,11 @@ async function load() {
   state.all = people;
   setView("recent");      // default: Recent
   render();
+  // Library counts (people / groups / filtered) so it's clear what's shown vs
+  // dropped by the junk filter. Non-blocking; tolerates a missing stats file.
+  fetch("/out/stats.json").then((r) => r.json()).then((s) => {
+    state.stats = s; renderCounts();
+  }).catch(() => { renderCounts(); });
   // Optional, non-blocking model-status hint for first semantic search.
   fetch("/api/status").then((r) => r.json()).then((s) => {
     if (s && s.loaded === false) {
@@ -306,7 +360,8 @@ function render() {
 }
 
 function renderHeader() {
-  theadEl.querySelectorAll("th").forEach((th) => {
+  // Sortable columns (the static 4).
+  theadEl.querySelectorAll("th[data-sort]").forEach((th) => {
     const k = th.dataset.sort;
     const base = th.textContent.replace(/[ ▲▼]+$/, "").trim();
     if (k === state.sortKey) {
@@ -315,6 +370,21 @@ function renderHeader() {
       th.textContent = base;
     }
   });
+  // Dynamic, non-sortable Match column header — present only in semantic mode.
+  const headRow = theadEl.querySelector("tr");
+  let matchTh = theadEl.querySelector("th.col-match");
+  if (semanticActive()) {
+    if (!matchTh) {
+      matchTh = document.createElement("th");
+      matchTh.className = "col-match";
+      matchTh.textContent = "Match";
+      headRow.appendChild(matchTh); // last column
+    }
+  } else if (matchTh) {
+    matchTh.remove();
+  }
+  // Toggle a class on the grid so CSS can switch to a wider, auto layout.
+  $("#grid").classList.toggle("with-match", semanticActive());
 }
 
 function renderStatus(n) {
@@ -365,11 +435,28 @@ function rowHtml(p) {
     ? `<button class="pill pill-btn" data-key="${escapeHtml(p.key)}" style="--cc:${color}" title="Change category">${escapeHtml(cat || "—")}</button>`
     : `<span class="pill" style="--cc:${color}">${escapeHtml(cat || "—")}</span>`;
 
+  // Dynamic Match cell — only in semantic mode. Truncated vs. full per-row.
+  let matchCell = "";
+  if (semanticActive()) {
+    const raw = state.semantic.snippets[p.key];
+    if (raw && String(raw).trim()) {
+      const expanded = state.expanded.has(p.key);
+      const terms = state.semantic.terms;
+      const inner = expanded ? snippetFullHtml(raw, terms) : snippetTruncatedHtml(raw, terms);
+      const tip = expanded ? "Click to collapse" : "Click to expand";
+      matchCell = `<td class="col-match"><div class="snip${expanded ? " expanded" : ""}" ` +
+        `data-key="${escapeHtml(p.key)}" title="${tip}">${inner}</div></td>`;
+    } else {
+      matchCell = `<td class="col-match"></td>`; // no snippet → empty cell
+    }
+  }
+
   return `<tr class="${cls}"${dataKey}${dataOpen}${title}>` +
     `<td class="col-name">${nameCell}</td>` +
     `<td class="col-cat">${pill}</td>` +
     `<td class="col-last">${escapeHtml(relTime(p.last_date))}</td>` +
     `<td class="col-count">${p.count || 0}</td>` +
+    matchCell +
     `</tr>`;
 }
 
@@ -468,11 +555,14 @@ async function onEnter() {
     const r = await fetch("/api/search?q=" + encodeURIComponent(q));
     const data = await r.json();
     state.instantTokens = [];
+    state.expanded.clear();   // fresh search starts all rows collapsed
     state.semantic = {
       q,
       keys: new Set(data.keys || []),
       n: typeof data.n === "number" ? data.n : (data.keys || []).length,
       ms: data.ms || 0,
+      snippets: data.snippets || {},   // { personKey: matched chunk text }
+      terms: tokenize(q),              // query terms, for highlighting
     };
   } catch (e) {
     statusEl.textContent = "Search failed.";
@@ -516,6 +606,7 @@ document.querySelectorAll(".view-btn").forEach((b) =>
 groupsEl.addEventListener("change", () => {
   state.showGroups = groupsEl.checked;
   render();
+  renderCounts();
 });
 
 if (hideUnnamedEl) hideUnnamedEl.addEventListener("change", () => {
@@ -560,14 +651,29 @@ rowsEl.addEventListener("click", (e) => {
     renderBulkBar();
     return;
   }
-  // (b) category pill -> inline popover
+  // (b) Match snippet -> toggle truncated/full. Never opens Messages.
+  const snip = e.target.closest(".snip");
+  if (snip) {
+    e.stopPropagation();
+    const key = snip.dataset.key;
+    if (state.expanded.has(key)) state.expanded.delete(key); else state.expanded.add(key);
+    // Re-render just this cell to keep other rows / scroll position stable.
+    const raw = state.semantic && state.semantic.snippets[key];
+    const expanded = state.expanded.has(key);
+    const terms = state.semantic ? state.semantic.terms : [];
+    snip.innerHTML = expanded ? snippetFullHtml(raw, terms) : snippetTruncatedHtml(raw, terms);
+    snip.classList.toggle("expanded", expanded);
+    snip.title = expanded ? "Click to collapse" : "Click to expand";
+    return;
+  }
+  // (c) category pill -> inline popover
   const pill = e.target.closest(".pill-btn");
   if (pill) {
     e.stopPropagation();
     openCategoryPopover(pill, pill.dataset.key);
     return;
   }
-  // (c) open native Messages for people with a raw_id
+  // (d) open native Messages for people with a raw_id
   const tr = e.target.closest("tr.person");
   if (!tr) return;
   const raw = tr.dataset.raw;

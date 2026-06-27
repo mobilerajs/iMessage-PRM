@@ -85,6 +85,12 @@ body {
 .col-cat { width: 130px; }
 .col-count { width: 100px; }
 
+/* Semantic mode: a dynamic "Match" column appears. Widen the table to fit it
+   (720 base + 320 match = 1040). Still fixed layout, still centered. */
+#grid.with-match { width: 1040px; }
+.col-match { width: 320px; }
+#grid tbody td.col-match { white-space: normal; }
+
 #grid tbody td { padding: 7px 14px; border-bottom: 1px solid var(--line); vertical-align: middle; overflow: hidden; }
 #grid tbody tr.person { cursor: pointer; }
 #grid tbody tr.person:hover { background: var(--hover); }
@@ -107,6 +113,20 @@ tr.group .nm { font-weight: 500; }
 }
 .raw { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .suggest { font-size: 11px; color: #5856d6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Match snippet (semantic mode). Truncated = one clamped line; expanded =
+   full chunk with preserved line breaks, scrollable if tall. */
+.snip {
+  font-size: 12px; color: var(--muted); cursor: pointer; line-height: 1.4;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.snip:hover { color: var(--text); }
+.snip b { color: var(--text); font-weight: 700; background: #fff3b0; border-radius: 2px; padding: 0 1px; }
+.snip.expanded {
+  white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere;
+  max-height: 220px; overflow-y: auto;
+  background: var(--bg); border-radius: 8px; padding: 7px 9px;
+}
 
 .pill {
   display: inline-block; font-size: 10px; font-weight: 600; border-radius: 20px;
@@ -174,3 +194,6 @@ td.col-count { color: var(--text); font-variant-numeric: tabular-nums; }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 [hidden] { display: none !important; }
+
+/* Library counts under the title. */
+.counts { font-size: 12px; color: var(--muted); margin-top: 3px; }

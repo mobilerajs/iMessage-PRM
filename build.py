@@ -1297,6 +1297,13 @@ def main() -> None:
           f"(add a key to \"keep\" in data/exclude.json to rescue any).")
     print(f"Wrote {OUT}/people.json + {kept} conversation files.")
 
+    # Small stats file the UI surfaces so it's clear what's shown vs filtered.
+    stats = {"people": n_people, "groups": n_groups, "kept": kept,
+             "filtered": {"total": dropped + excluded + empty + spam + alert,
+                          "junk": dropped, "feedback": excluded, "empty": empty,
+                          "opt_out_spam": spam, "alerts": alert}}
+    json.dump(stats, open(os.path.join(OUT, "stats.json"), "w"), indent=2)
+
 
 if __name__ == "__main__":
     main()
