@@ -1373,6 +1373,7 @@ def main() -> None:
     if os.environ.get("CRM_SKIP_EMBED") == "1":
         print("  embeddings: CRM_SKIP_EMBED=1 — skipping index build.")
     elif convo_msgs:
+        import shutil
         import time as _time
         import numpy as np
         import embeddings as _embeddings
@@ -1490,6 +1491,19 @@ def main() -> None:
         indexed_sigs = {k: new_sigs[k] for k in set(chunk_keys) if k in new_sigs}
         with open(EMBED_SIG_PATH, "w", encoding="utf-8") as f:
             json.dump(indexed_sigs, f, ensure_ascii=False)
+
+        # Keyword (FTS5) index over the SAME chunk texts, so literal/phrase
+        # search stays congruent with what embeddings see. Best-effort: a build
+        # must still succeed if FTS5 is somehow unavailable.
+        try:
+            import keyword_search as _ks
+            fts_path = os.path.join(OUT, "fts.db")
+            if os.path.exists(fts_path):
+                shutil.copy2(fts_path, fts_path + ".bak")
+            _ks.build_fts(chunk_keys, chunk_texts, fts_path)
+            print(f"  keyword index: {len(chunk_keys)} chunks -> {fts_path}")
+        except Exception as exc:  # noqa: BLE001 - never fail a build over FTS
+            print(f"  ! keyword index skipped: {exc}")
         print(f"  embeddings: indexed {matrix.shape[0]} chunks "
               f"(dim {matrix.shape[1] if matrix.ndim == 2 else 0}) in "
               f"{_time.time() - t0:.1f}s -> {npy_path}")
