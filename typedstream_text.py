@@ -95,11 +95,13 @@ def decode(blob) -> str | None:
 
 if __name__ == "__main__":
     # Smoke test against the real database.
-    import sqlite3
     import sys
 
+    import imessage_db
+
     db = sys.argv[1] if len(sys.argv) > 1 else "data/chat.db"
-    conn = sqlite3.connect(db)
+    # Open read-only (never write chat.db) — same invariant build.py relies on.
+    conn = imessage_db.open_readonly(db)
     conn.text_factory = bytes  # we want raw bytes for attributedBody
     rows = conn.execute(
         "SELECT ROWID, text, attributedBody FROM message "

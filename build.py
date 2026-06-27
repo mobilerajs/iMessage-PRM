@@ -60,7 +60,7 @@ def norm_key(raw: str) -> str:
     """Canonical key for matching a handle id to a contact.
 
     Emails -> lowercased as-is. Phone numbers -> last 10 digits (drops country
-    code and all formatting) so "+1 (201) 340-1644" and "2013401644" match.
+    code and all formatting) so "+1 (555) 123-4567" and "5551234567" match.
     """
     if not raw:
         return ""
@@ -88,7 +88,7 @@ def load_exclusions(path: str) -> dict:
 
     Shape (all keys optional):
         {
-          "keys":            ["p2013401644", "g42"],   # hide these exact convos
+          "keys":            ["p5551234567", "g42"],   # hide these exact convos
           "name_contains":   ["amazon", "doordash"],   # hide by name substring
           "snippet_contains":["unsubscribe", "opted out", "verification code"]
         }
@@ -941,11 +941,11 @@ def main() -> None:
     live_path = os.path.join(DATA, "contacts_live.json")
     if os.path.exists(live_path):
         try:
-            live = json.load(open(live_path, encoding="utf-8"))
-            for k, nm in live.items():
+            live_names = json.load(open(live_path, encoding="utf-8"))
+            for k, nm in live_names.items():
                 if nm:
                     name_by_key[k] = nm
-            print(f"  applied {len(live)} live Contacts names")
+            print(f"  applied {len(live_names)} live Contacts names")
         except Exception as exc:
             print(f"  ! could not read contacts_live.json: {exc}")
 
@@ -1095,20 +1095,19 @@ def main() -> None:
 
     # Seed key sets for the mutually-exclusive category partition.
     #   contractor: curated list (filter_contractors.json) + base "Service" people
-    #   work:       the 76-key curated Work list, recovered from the original
-    #               Catch-up include_keys in the 2026-06-10 filters backup.
+    #   work:       an optional curated Work key list at
+    #               data/enrich_parts/filter_work.json (same {"keys":[...]} shape
+    #               as the other filter_*.json). If absent, there is no Work seed
+    #               and Work comes purely from the model's work/personal pass.
     contractor_keys = set(load_custom_filters(
         os.path.join(DATA, "enrich_parts")).get("Contractors", set()))
     work_keys: set = set()
-    work_backup = os.path.join(DATA, "filters.backup-20260610-134454.json")
-    if os.path.exists(work_backup):
+    work_seed = os.path.join(DATA, "enrich_parts", "filter_work.json")
+    if os.path.exists(work_seed):
         try:
-            for f in json.load(open(work_backup, encoding="utf-8")):
-                if f.get("id") == "catch-up":
-                    work_keys = set(f.get("include_keys", []))
-                    break
+            work_keys = set(json.load(open(work_seed, encoding="utf-8")).get("keys", []))
         except Exception as exc:
-            print(f"  ! could not read work seed keys from {work_backup}: {exc}")
+            print(f"  ! could not read work seed keys from {work_seed}: {exc}")
     print(f"  family: {len(family_keys)} conversations; "
           f"contractor seed: {len(contractor_keys)}, work seed: {len(work_keys)}; "
           f"custom filters: {list(custom_filters) or 'none'}")

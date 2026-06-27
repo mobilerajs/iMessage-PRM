@@ -51,16 +51,12 @@ pointing at the live database is one env var away (see below) and is a roadmap i
 
 ## What it does
 
-### Two interfaces (same data + engine)
-- **Search-first table — the default (`/`).** One search box and a dense, sortable
-  table; click a row to open that person in the **native Messages app**. Built for
-  "find someone fast." Semantic results add a **Match** column showing the exact bit of
-  thread that matched (click to expand), and a header line shows library counts
-  (people / groups / filtered).
-- **Classic list + chat (`/classic`).** The original sidebar list with an in-app
-  read-only thread pane and category chips.
-
-Both are served by the same backend and share categories, search, and your edits.
+### Search-first table (the whole app)
+One search box and a dense, sortable table; click a row to open that person in the
+**native Messages app**. Built for "find someone fast." Semantic results add a **Match**
+column showing the exact bit of thread that matched (click to expand), and a header line
+shows library counts (people / groups / filtered). Toggles hide bare phone numbers with
+no name and show/hide group chats; jump-to-top/bottom buttons appear in long results.
 
 ### Mutually-exclusive categories (a partition)
 Every person lands in **exactly one** category — no duplicates across chips:
@@ -110,6 +106,15 @@ is what makes in-passing topics actually findable.)
   contacted / Name (A–Z).
 - **Open in Messages / Contacts**, jump-to-top/bottom in long threads.
 
+### Refresh (snapshot + sync, on demand)
+A **Refresh** button snapshots the live Messages DB (SQLite backup API — never touches
+the original), re-syncs names from Contacts.app, and rebuilds the index — all in one
+click. A header line shows **"Last synced on …"**. Before running, a modal **estimates
+how long it will take** (from the chat.db size and your contact count) and asks you to
+confirm; while it runs, a **blocking overlay** prevents interaction until it finishes.
+Rebuilds are **incremental** — only conversations whose message count or last date
+changed are re-embedded, so a no-op refresh is ~2 s instead of re-embedding everything.
+
 ---
 
 ## Architecture
@@ -124,10 +129,13 @@ data/enrich_parts/ ──┘               out/embeddings.npy      (search index
 classify.py   local Qwen3-4B (MLX): category/work/family judgments, filter routing,
               semantic confirm, name inference
 embeddings.py local bge-small (MLX): build the search index + cosine retrieval
-server.py     Flask: serves both UIs, keeps the model warm, exposes the API
-              (/api/search, /api/filter, /api/contacts/*, /api/userstate, …)
-take2/        vanilla-JS search-first table UI — the DEFAULT, served at /
-app.js        classic list + chat UI (exclusive-category chips, thread pane) — /classic
+server.py     Flask: serves the app, keeps the model warm, exposes the API
+              (/api/search, /api/filter, /api/contacts/*, /api/userstate,
+               /api/refresh, /api/refresh/estimate, …); static routes are
+               allowlisted so data files and source are never served
+index.html ·  vanilla-JS search-first table UI — the single app, served at /
+app.js ·
+styles.css
 ```
 
 - **Data flow:** `build.py` is the pipeline (parse → junk-filter → classify → write
@@ -166,20 +174,20 @@ This is a first pass; these are known, deliberate gaps:
   (e.g. the work/personal prompt was tuned against ~130 labels, ~68% precision / ~75%
   recall), not a maintained eval harness. There's no regression eval for search
   relevance or category accuracy.
-- **Light test coverage.** 62 unit tests cover the *pure* logic (read-only DB open,
+- **Light test coverage.** 77 unit tests cover the *pure* logic (read-only DB open,
   category partition/priority, family veto, search re-rank, chunking/aggregation,
-  filter routing). The
+  filter routing, incremental embedding reuse, refresh estimate). The
   integration surfaces — Flask endpoints, AppleScript/Contacts, the model passes, the
   frontend — are **not** covered by automated tests and were verified manually.
-- **Uses a copy of `chat.db`, not the live database.** Live access works via env var +
-  Full Disk Access (below) but isn't the default flow, and there's no installer.
+- **Uses a copy of `chat.db`, not the live database** for the build. The **Refresh**
+  button snapshots the live DB on demand (read-only backup API), but there's no
+  background poller and no installer — refresh is a manual click.
 - **No email enrichment.** Work-vs-Personal is iMessage-only today; the `unsure` flag
   marks exactly the people the planned Gmail/Outlook step would resolve.
-- **UI is in flux.** Two interfaces coexist (search-first table is now the default;
-  the classic list+chat is at `/classic`) while the design settles — they're still
-  being shaped, not a final, polished product.
-- **No packaging/auto-update.** Re-running `build.py` is the manual seam a scheduled
-  refresh would hook into.
+- **UI is still settling.** The single search-first table works end-to-end but is being
+  actively shaped, not a final, polished product.
+- **No background auto-update.** Refresh (snapshot → sync → incremental rebuild) is the
+  manual seam a scheduled poller would hook into.
 
 ---
 

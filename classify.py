@@ -594,6 +594,12 @@ def route_filter(model, tok, description):
 
 def save_filter(name, description, keys, fid=None):
     slug = fid or re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    # Belt-and-suspenders: the slug becomes a filename, so strip anything outside
+    # [a-z0-9-] here too — even a bad caller-supplied fid can never escape
+    # data/enrich_parts/. An empty result is a hard error (no path to write).
+    slug = re.sub(r"[^a-z0-9-]", "", slug)
+    if not slug:
+        raise ValueError("invalid filter id")
     path = os.path.join(HERE, f"data/enrich_parts/filter_{slug}.json")
     json.dump({"_filter": name, "description": description, "keys": keys},
               open(path, "w"), indent=0)

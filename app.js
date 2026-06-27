@@ -301,7 +301,7 @@ async function load() {
   // tells us the local server is up, so we can reveal the Refresh button (it
   // stays hidden in static/file mode, where /api/refresh wouldn't exist).
   fetch("/api/status").then((r) => r.json()).then((s) => {
-    if (s && s.loaded === false) {
+    if (s && s.model_loading === true) {
       statusEl.dataset.modelHint = "Model still loading — first search may be slow.";
     }
     if (refreshBtn) refreshBtn.hidden = false;  // server is reachable
@@ -649,15 +649,166 @@ function clearSearch() {
   render();
 }
 
-/* ---------------- Refresh (snapshot live DB + incremental rebuild) ---------------- */
+/* ---------------- Refresh (snapshot live DB + incremental rebuild) ----------------
+   UX: clicking Refresh first opens a confirmation modal with a time estimate
+   (the contacts sync over a large address book is slow). On Proceed we POST
+   /api/refresh and put up a full-page BLOCKING overlay (backdrop intercepts all
+   clicks) that shows live stage text until the job finishes. */
 let refreshing = false;
 
-function setRefreshing(on, label) {
+// Friendly duration: seconds -> "~45 sec" / "~90 sec" / "~2 min" / "~3.5 min".
+function friendlyDuration(secs) {
+  const s = Math.max(1, Math.round(Number(secs) || 0));
+  if (s < 90) {
+    // Round to the nearest 5s for a "~45 sec" feel; never below ~15 sec.
+    const r = Math.max(15, Math.round(s / 5) * 5);
+    return `~${r} sec`;
+  }
+  const mins = s / 60;
+  // Whole minute if close, else one decimal ("~2 min" / "~2.5 min").
+  const rounded = Math.round(mins * 2) / 2;
+  const label = Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+  return `~${label} min`;
+}
+
+// Estimate refresh seconds from the estimate payload. Prefer the measured
+// last_seconds; otherwise model it: AppleScript contacts sync dominates
+// (~contacts/80 s), plus a small base for db parse / embed / rebuild.
+function estimateSeconds(est) {
+  if (est && typeof est.last_seconds === "number" && est.last_seconds > 0) {
+    return { secs: est.last_seconds, measured: true };
+  }
+  let secs = 20; // base: db parse + embeddings + rebuild
+  if (est && typeof est.contacts === "number" && est.contacts > 0) {
+    secs += est.contacts / 80;        // AppleScript contacts sync dominates
+  } else {
+    secs += 70;                       // unknown contact count → assume "a minute or two"
+  }
+  if (est && typeof est.db_mb === "number" && est.db_mb > 0) {
+    secs += Math.min(30, est.db_mb / 40); // larger DBs parse a bit slower (capped)
+  }
+  return { secs, measured: false };
+}
+
+// "~140 MB messages · 3,200 contacts" — context line, omits unknown parts.
+function refreshContextLine(est) {
+  const parts = [];
+  if (est && typeof est.db_mb === "number" && est.db_mb > 0) {
+    parts.push(`~${Math.round(est.db_mb).toLocaleString()} MB messages`);
+  }
+  if (est && typeof est.contacts === "number" && est.contacts > 0) {
+    parts.push(`${est.contacts.toLocaleString()} contacts`);
+  }
+  return parts.join(" · ");
+}
+
+// Map the job `message` to friendly stage text for the blocking overlay.
+function refreshStageText(message) {
+  switch (message) {
+    case "snapshotting messages":
+    case "snapshotting": return "Snapshotting new messages…";
+    case "syncing contacts": return "Re-reading your contacts… (this is the slow part)";
+    case "rebuilding": return "Rebuilding the index…";
+    case "done": return "Done";
+    default: return "Refreshing…";
+  }
+}
+
+/* ---- Confirmation modal ---- */
+let refreshModalEl = null;
+function closeRefreshModal() {
+  if (refreshModalEl) { refreshModalEl.remove(); refreshModalEl = null; }
+}
+
+async function openRefreshModal() {
+  if (refreshing) return;
+  closeRefreshModal();
+
+  // Build the modal up front (with a placeholder estimate) so the click feels
+  // instant; fill in the real estimate once /api/refresh/estimate resolves.
+  refreshModalEl = document.createElement("div");
+  refreshModalEl.className = "modal-backdrop";
+  refreshModalEl.innerHTML =
+    `<div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="rf-title">
+       <h2 class="modal-title" id="rf-title">Refresh from your live data?</h2>
+       <p class="modal-body">
+         This will snapshot your newest messages, re-read your contacts, and
+         rebuild the search index.
+       </p>
+       <p class="modal-est" id="rf-est">Checking estimate…</p>
+       <p class="modal-ctx" id="rf-ctx" hidden></p>
+       <div class="modal-actions">
+         <button class="modal-btn modal-cancel" id="rf-cancel">Cancel</button>
+         <button class="modal-btn modal-proceed" id="rf-proceed">Proceed</button>
+       </div>
+     </div>`;
+  document.body.appendChild(refreshModalEl);
+
+  const cancel = () => closeRefreshModal();
+  $("#rf-cancel").onclick = cancel;
+  $("#rf-proceed").onclick = () => { closeRefreshModal(); startRefresh(); };
+  // Click outside the card (on the backdrop) cancels; Escape cancels.
+  refreshModalEl.addEventListener("click", (e) => {
+    if (e.target === refreshModalEl) cancel();
+  });
+  const onKey = (e) => {
+    if (e.key === "Escape") { document.removeEventListener("keydown", onKey); cancel(); }
+  };
+  document.addEventListener("keydown", onKey);
+
+  // Fetch the estimate; degrade to a generic message on any failure.
+  let est = null;
+  try {
+    est = await fetch("/api/refresh/estimate").then((r) => r.json());
+  } catch (e) { est = null; }
+  if (!refreshModalEl) return; // user already cancelled
+
+  const estEl = $("#rf-est");
+  const ctxEl = $("#rf-ctx");
+  if (est) {
+    const { secs, measured } = estimateSeconds(est);
+    estEl.textContent = measured
+      ? `Usually takes ${friendlyDuration(secs)}.`
+      : `This may take ${friendlyDuration(secs)} — re-reading your contacts is the slow part.`;
+    const ctx = refreshContextLine(est);
+    if (ctx) { ctxEl.textContent = ctx; ctxEl.hidden = false; }
+  } else {
+    estEl.textContent = "This may take a minute or two — re-reading your contacts is the slow part.";
+  }
+}
+
+/* ---- Blocking overlay during the run ---- */
+let refreshOverlayEl = null;
+function openRefreshOverlay() {
+  if (refreshOverlayEl) return;
+  refreshOverlayEl = document.createElement("div");
+  refreshOverlayEl.className = "refresh-overlay";
+  refreshOverlayEl.innerHTML =
+    `<div class="refresh-overlay-card" role="status" aria-live="polite">
+       <span class="spin-dot spin-lg"></span>
+       <div class="refresh-overlay-text">
+         <div class="refresh-overlay-stage" id="rf-stage">Starting refresh…</div>
+         <div class="refresh-overlay-note">Please wait — don't close this tab.</div>
+       </div>
+     </div>`;
+  document.body.appendChild(refreshOverlayEl);
+  // Trap Escape so it can't dismiss anything underneath while the run blocks.
+  refreshOverlayEl.tabIndex = -1;
+}
+function setRefreshStage(text) {
+  const el = refreshOverlayEl && refreshOverlayEl.querySelector("#rf-stage");
+  if (el) el.textContent = text;
+}
+function closeRefreshOverlay() {
+  if (refreshOverlayEl) { refreshOverlayEl.remove(); refreshOverlayEl = null; }
+}
+
+function setRefreshing(on) {
   refreshing = on;
   if (!refreshBtn) return;
   refreshBtn.disabled = on;
   refreshBtn.innerHTML = on
-    ? `<span class="spin-dot"></span> ${escapeHtml(label || "Refreshing…")}`
+    ? `<span class="spin-dot"></span> Refreshing…`
     : "↻ Refresh";
 }
 
@@ -678,18 +829,21 @@ async function reloadAfterRefresh() {
   renderSynced();
 }
 
-async function onRefresh() {
+async function startRefresh() {
   if (refreshing) return;
-  setRefreshing(true, "Refreshing…");
+  setRefreshing(true);
+  openRefreshOverlay();
   let job;
   try {
     job = await fetch("/api/refresh", { method: "POST" }).then((r) => r.json());
   } catch (e) {
+    closeRefreshOverlay();
     setRefreshing(false);
     statusEl.textContent = "Refresh failed (server unreachable).";
     return;
   }
   if (!job || !job.job_id) {
+    closeRefreshOverlay();
     setRefreshing(false);
     statusEl.textContent = "Refresh failed: " + ((job && job.error) || "no job id");
     return;
@@ -700,31 +854,42 @@ async function onRefresh() {
     try {
       j = await fetch("/api/job/" + job.job_id).then((r) => r.json());
     } catch (e) {
+      closeRefreshOverlay();
       setRefreshing(false);
       statusEl.textContent = "Refresh failed (lost connection).";
       return;
     }
     if (j.state === "done") {
       await reloadAfterRefresh();
+      closeRefreshOverlay();
       setRefreshing(false);
+      // Brief confirmation using the job result, if present.
+      const res = j.result || {};
+      let msg = "Refreshed";
+      if (typeof res.contacts === "number") {
+        msg += res.contacts_synced
+          ? ` · ${res.contacts.toLocaleString()} contacts synced`
+          : ` · ${res.contacts.toLocaleString()} contacts`;
+      } else if (res.snapshotted) {
+        msg += " · new messages snapshotted";
+      }
+      statusEl.textContent = msg;
       return;
     }
     if (j.state === "error") {
+      closeRefreshOverlay();
       setRefreshing(false);
       statusEl.textContent = "Refresh failed: " + (j.message || "unknown error");
       return;
     }
-    // running / superseded-not-expected: surface the stage and keep polling.
-    setRefreshing(true,
-      j.message === "rebuilding" ? "Rebuilding…"
-        : j.message === "snapshotting" ? "Snapshotting…"
-          : "Refreshing…");
+    // running: surface the live stage in the overlay and keep polling.
+    setRefreshStage(refreshStageText(j.message));
     setTimeout(poll, 1000);
   };
   setTimeout(poll, 1000);
 }
 
-if (refreshBtn) refreshBtn.addEventListener("click", onRefresh);
+if (refreshBtn) refreshBtn.addEventListener("click", openRefreshModal);
 
 /* ---------------- Events ---------------- */
 searchEl.addEventListener("input", onInput);

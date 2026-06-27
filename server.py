@@ -24,6 +24,11 @@ CHAT_DB = os.path.expanduser(
     os.environ.get("CHAT_DB", os.path.join(HERE, "data", "chat.db")))
 # The live, on-device Messages database. Reading it requires Full Disk Access.
 LIVE_CHAT_DB = os.path.expanduser("~/Library/Messages/chat.db")
+# The exported vCard the build reads (mirrors build.py's CONTACTS_VCF default of
+# data/contacts.vcf). Used by /api/refresh/estimate to count contacts when the
+# live Contacts sync (data/contacts_live.json) isn't present.
+CONTACTS_VCF = os.path.expanduser(
+    os.environ.get("CONTACTS_VCF", os.path.join(HERE, "data", "contacts.vcf")))
 STATS_OUT = os.path.join(HERE, "out", "stats.json")
 FILTERS_DATA = os.path.join(HERE, "data/filters.json")
 FILTERS_OUT = os.path.join(HERE, "out/filters.json")
@@ -57,6 +62,17 @@ PRIOR_ALPHA = 0.2
 SEARCH_WIDE_N = max(120, 4 * SEARCH_TOPK)
 
 
+def _atomic_dump(obj, path, **kw):
+    """Write JSON atomically: dump to a temp file in the same dir, then
+    os.replace() it into place so a crash mid-write can't leave a truncated /
+    corrupt file (os.replace is atomic on the same filesystem)."""
+    d = os.path.dirname(path) or "."
+    tmp = f"{path}.tmp.{os.getpid()}"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(obj, fh, **kw)
+    os.replace(tmp, path)
+
+
 def _load_filters():
     try:
         return json.load(open(FILTERS_DATA, encoding="utf-8"))
@@ -65,8 +81,8 @@ def _load_filters():
 
 
 def _save_filters(filters):
-    json.dump(filters, open(FILTERS_DATA, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
-    json.dump(filters, open(FILTERS_OUT, "w", encoding="utf-8"), ensure_ascii=False)
+    _atomic_dump(filters, FILTERS_DATA, ensure_ascii=False, indent=2)
+    _atomic_dump(filters, FILTERS_OUT, ensure_ascii=False)
 
 
 def _days_since(iso):
@@ -138,6 +154,9 @@ app = Flask(__name__, static_folder=None)
 STATE = {"model": None, "tok": None, "loading": True, "error": None}
 JOBS = {}  # job_id -> {state, done, total, message, result}
 FILTER_JOB = {}  # filter id -> latest job_id; lets a new run supersede an in-flight one
+# Duration (seconds) of the most recent successful /api/refresh, so the pre-
+# refresh modal can show a human estimate of how long the next one will take.
+REFRESH_STATE = {"last_seconds": None}
 
 
 def _superseded(fid, job_id):
@@ -345,12 +364,40 @@ def index():
     return send_from_directory(HERE, "index.html")
 
 
+# Static files the frontend may fetch from the project ROOT. Everything else at
+# root (config.json, data/, *.py source, etc.) is NOT served — this catch-all is
+# an explicit ALLOWLIST, not a "serve the whole tree" handler. send_from_directory
+# already blocks "..", but allowlisting is what keeps source/data unreachable
+# even without traversal.
+_ROOT_ALLOW = {"index.html", "app.js", "styles.css", "favicon.ico"}
+# Generated artifacts under out/ the frontend legitimately fetches. Beyond these
+# fixed names, only per-id subpaths are allowed: messages/<id>.json and
+# photos/<id>.<ext> (the lazy-loaded conversation + contact photo).
+_OUT_ALLOW = {"people.json", "stats.json", "filters.json", "digests.json"}
+_OUT_MESSAGE_RE = re.compile(r"^messages/[A-Za-z0-9_-]+\.json$")
+_OUT_PHOTO_RE = re.compile(r"^photos/[A-Za-z0-9_-]+\.[A-Za-z0-9]+$")
+
+
+def _out_allowed(rel):
+    """True if `rel` (a path under out/) is a known frontend artifact."""
+    return (rel in _OUT_ALLOW
+            or bool(_OUT_MESSAGE_RE.match(rel))
+            or bool(_OUT_PHOTO_RE.match(rel)))
+
+
 @app.route("/<path:path>")
 def static_files(path):
-    # Serve app.js / styles.css from the root and generated data from out/.
-    root = os.path.join(HERE, "out") if path.startswith("out/") else HERE
-    rel = path[4:] if path.startswith("out/") else path
-    return send_from_directory(root, rel)
+    # Serve app.js / styles.css from the root and KNOWN generated data from out/.
+    # Anything not on the allowlist (config.json, data/, .py source, unknown
+    # out/ files) -> 404, so the server never exposes data or source.
+    if path.startswith("out/"):
+        rel = path[4:]
+        if not _out_allowed(rel):
+            return ("Not found", 404)
+        return send_from_directory(os.path.join(HERE, "out"), rel)
+    if path not in _ROOT_ALLOW:
+        return ("Not found", 404)
+    return send_from_directory(HERE, path)
 
 
 # ---- api -------------------------------------------------------------------
@@ -376,7 +423,7 @@ def get_userstate():
 @app.route("/api/userstate", methods=["POST"])
 def set_userstate():
     body = request.get_json(force=True)
-    json.dump(body, open(USERSTATE, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    _atomic_dump(body, USERSTATE, ensure_ascii=False, indent=2)
     return jsonify(ok=True)
 
 
@@ -464,6 +511,14 @@ def create_filter():
         try:
             # Stable id: keep the original on edit so we update in place (no dup).
             slug = edit_id or re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+            # Security: the slug becomes a file path (filter_<slug>.json) and a
+            # dict key, so sanitize it the SAME way delete_filter does — strip
+            # anything outside [a-z0-9-] so a value like "../../x" can never
+            # escape data/enrich_parts/. Reject if nothing survives.
+            slug = re.sub(r"[^a-z0-9-]", "", slug)
+            if not slug:
+                JOBS[job_id].update(state="error", message="invalid filter id")
+                return
             FILTER_JOB[slug] = job_id  # claim this filter; supersede any in-flight run
             existing = next((f for f in _load_filters() if f.get("id") == slug), None)
             keys_path = os.path.join(HERE, f"data/enrich_parts/filter_{slug}.json")
@@ -589,15 +644,7 @@ def _norm_key(raw):
     return d[-10:] if len(d) >= 10 else d
 
 
-@app.route("/api/contacts/sync", methods=["POST"])
-def contacts_sync():
-    """Pull current names from Contacts.app so renames there show up here. Reads
-    every contact's name + phones + emails, rebuilds the phone/email -> name map,
-    and re-runs build. Slow for large address books, so it's a background job."""
-    job_id = uuid.uuid4().hex[:8]
-    JOBS[job_id] = {"state": "running", "done": 0, "total": 0, "message": "reading Contacts (this can take a minute)", "result": None}
-
-    script = '''
+_CONTACTS_SCRIPT = '''
 on joinList(lst)
   set AppleScript's text item delimiters to ","
   set s to (lst as text)
@@ -620,28 +667,53 @@ tell application "Contacts"
   return out
 end tell'''
 
+
+def sync_contacts_live():
+    """Read current names from Contacts.app (AppleScript) into
+    data/contacts_live.json so renames/merges there show up here (build.py merges
+    it, live names winning). Best-effort + fully local: returns
+    {"synced": True, "contacts": N} or {"synced": False, "reason": ...}. Never
+    raises. Needs macOS Automation permission for Contacts; if denied/absent it
+    just returns synced=False and the caller keeps the prior vCard names."""
+    try:
+        r = subprocess.run(["osascript", "-e", _CONTACTS_SCRIPT],
+                           capture_output=True, text=True, timeout=600)
+        if r.returncode != 0:
+            return {"synced": False, "reason": (r.stderr or "osascript failed").strip()[:200]}
+        name_map = {}
+        for line in (r.stdout or "").splitlines():
+            parts = line.split("\t")
+            if len(parts) < 3 or not parts[0].strip():
+                continue
+            nm = parts[0].strip()
+            for h in parts[1].split(",") + parts[2].split(","):
+                k = _norm_key(h)
+                if k:
+                    name_map.setdefault(k, nm)
+        json.dump(name_map, open(os.path.join(HERE, "data/contacts_live.json"), "w",
+                                 encoding="utf-8"), ensure_ascii=False)
+        return {"synced": True, "contacts": len(name_map)}
+    except Exception as exc:
+        return {"synced": False, "reason": str(exc)[:200]}
+
+
+@app.route("/api/contacts/sync", methods=["POST"])
+def contacts_sync():
+    """Pull current names from Contacts.app so renames there show up here. Reads
+    every contact's name + phones + emails, rebuilds the phone/email -> name map,
+    and re-runs build. Slow for large address books, so it's a background job."""
+    job_id = uuid.uuid4().hex[:8]
+    JOBS[job_id] = {"state": "running", "done": 0, "total": 0, "message": "reading Contacts (this can take a minute)", "result": None}
+
     def run():
         try:
-            r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=600)
-            if r.returncode != 0:
-                JOBS[job_id].update(state="error", message=(r.stderr or "osascript failed").strip())
+            res = sync_contacts_live()
+            if not res.get("synced"):
+                JOBS[job_id].update(state="error", message=res.get("reason") or "Contacts sync failed")
                 return
-            name_map = {}
-            for line in (r.stdout or "").splitlines():
-                parts = line.split("\t")
-                if len(parts) < 3 or not parts[0].strip():
-                    continue
-                nm = parts[0].strip()
-                handles = parts[1].split(",") + parts[2].split(",")
-                for h in handles:
-                    k = _norm_key(h)
-                    if k:
-                        name_map.setdefault(k, nm)
-            json.dump(name_map, open(os.path.join(HERE, "data/contacts_live.json"), "w", encoding="utf-8"),
-                      ensure_ascii=False)
             JOBS[job_id]["message"] = "rebuilding"
             subprocess.run([sys.executable, os.path.join(HERE, "build.py")], cwd=HERE, check=True, capture_output=True)
-            JOBS[job_id].update(state="done", message="done", result={"contacts": len(name_map)})
+            JOBS[job_id].update(state="done", message="done", result={"contacts": res.get("contacts")})
         except Exception as exc:
             JOBS[job_id].update(state="error", message=str(exc))
 
@@ -816,11 +888,17 @@ def refresh():
 
     def run():
         try:
-            JOBS[job_id]["message"] = "snapshotting"
+            t_start = time.time()  # time the whole snapshot+contacts+rebuild run
+            JOBS[job_id]["message"] = "snapshotting messages"
             snap = snapshot_live_db()  # best effort; never raises
+            JOBS[job_id]["message"] = "syncing contacts"
+            csync = sync_contacts_live()  # best effort; never raises
             JOBS[job_id]["message"] = "rebuilding"
             subprocess.run([sys.executable, "build.py"], cwd=HERE,
                            check=True, capture_output=True)
+            # Record the duration so /api/refresh/estimate can show how long the
+            # next refresh is likely to take.
+            REFRESH_STATE["last_seconds"] = round(time.time() - t_start, 1)
             last_synced = None
             try:
                 stats = json.load(open(STATS_OUT, encoding="utf-8"))
@@ -831,7 +909,9 @@ def refresh():
                 state="done", message="done",
                 result={"last_synced": last_synced,
                         "snapshotted": snap.get("snapshotted"),
-                        "snapshot_reason": snap.get("reason")})
+                        "snapshot_reason": snap.get("reason"),
+                        "contacts_synced": csync.get("synced"),
+                        "contacts": csync.get("contacts")})
         except subprocess.CalledProcessError as exc:
             err = (exc.stderr or b"").decode("utf-8", "replace").strip() \
                 if isinstance(exc.stderr, (bytes, bytearray)) else str(exc)
@@ -841,6 +921,48 @@ def refresh():
 
     threading.Thread(target=run, daemon=True).start()
     return jsonify(job_id=job_id)
+
+
+def _count_vcard_contacts(path):
+    """Count FN: lines in a vCard (one per contact). Returns an int, or None if
+    the file is missing/unreadable. Never raises."""
+    try:
+        n = 0
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if line.startswith("FN:") or line.startswith("FN;"):
+                    n += 1
+        return n
+    except Exception:
+        return None
+
+
+@app.route("/api/refresh/estimate")
+def refresh_estimate():
+    """Numbers the pre-refresh modal combines into a human time estimate.
+
+    Returns the working DB size, a contacts count (live Contacts sync if present,
+    else the vCard's FN: count), and the duration of the most recent refresh.
+    Never raises: any missing file or error just yields a null for that field."""
+    db_mb = None
+    try:
+        if os.path.exists(CHAT_DB):
+            db_mb = round(os.path.getsize(CHAT_DB) / 1e6, 1)
+    except Exception:
+        db_mb = None
+
+    contacts = None
+    try:
+        live_path = os.path.join(HERE, "data", "contacts_live.json")
+        if os.path.exists(live_path):
+            contacts = len(json.load(open(live_path, encoding="utf-8")))
+        else:
+            contacts = _count_vcard_contacts(CONTACTS_VCF)
+    except Exception:
+        contacts = None
+
+    return jsonify(db_mb=db_mb, contacts=contacts,
+                   last_seconds=REFRESH_STATE.get("last_seconds"))
 
 
 @app.route("/api/job/<job_id>")
@@ -866,6 +988,12 @@ def filter_refine(fid):
     rows, but similar ones."""
     if STATE["loading"]:
         return jsonify(error="model still loading"), 503
+    # Security: fid (URL path segment) becomes a file path (filter_<fid>.json)
+    # via save_filter and a FILTER_JOB key — sanitize the SAME way delete_filter
+    # does so a value like "../../x" can never escape data/enrich_parts/.
+    fid = re.sub(r"[^a-z0-9-]", "", fid)
+    if not fid:
+        return jsonify(error="invalid filter id"), 400
     f = next((x for x in _load_filters() if x.get("id") == fid), None)
     if not f:
         return jsonify(error="not found"), 404
