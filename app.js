@@ -620,8 +620,11 @@ async function onEnter() {
       terms: tokenize(q),              // query terms, for highlighting
     };
   } catch (e) {
-    statusEl.textContent = "Search failed.";
+    // Keep the typed query and offer an inline Retry (no dead-end). Mirrors the
+    // existing #clear link pattern: an inline <a> with an id + click handler.
     loadingEl.hidden = true;
+    statusEl.innerHTML = `Search failed. <a id="retry">Retry</a>`;
+    const rt = $("#retry"); if (rt) rt.onclick = onEnter;
     return;
   }
   loadingEl.hidden = true;
@@ -840,6 +843,13 @@ async function reloadAfterRefresh() {
   renderSynced();
 }
 
+// Render a failure message in #status with an inline Retry link that re-invokes
+// the given starter (no dead-end). Mirrors the #clear link pattern.
+function statusWithRetry(msg, retryFn) {
+  statusEl.innerHTML = `${escapeHtml(msg)} <a id="retry">Retry</a>`;
+  const rt = $("#retry"); if (rt) rt.onclick = retryFn;
+}
+
 async function startRefresh() {
   if (refreshing) return;
   setRefreshing(true);
@@ -850,13 +860,13 @@ async function startRefresh() {
   } catch (e) {
     closeRefreshOverlay();
     setRefreshing(false);
-    statusEl.textContent = "Refresh failed (server unreachable).";
+    statusWithRetry("Refresh failed (server unreachable).", startRefresh);
     return;
   }
   if (!job || !job.job_id) {
     closeRefreshOverlay();
     setRefreshing(false);
-    statusEl.textContent = "Refresh failed: " + ((job && job.error) || "no job id");
+    statusWithRetry("Refresh failed: " + ((job && job.error) || "no job id"), startRefresh);
     return;
   }
   // Poll the shared /api/job/<id> route until done/error.
@@ -881,7 +891,7 @@ async function startRefresh() {
     onError: (m) => {
       closeRefreshOverlay();
       setRefreshing(false);
-      statusEl.textContent = "Refresh failed: " + m;
+      statusWithRetry("Refresh failed: " + m, startRefresh);
     },
   });
 }
