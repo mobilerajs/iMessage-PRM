@@ -493,9 +493,24 @@ def get_userstate():
                         "dismissed": {}, "catOverride": {}})
 
 
+def validate_userstate(body):
+    """Userstate must be a JSON object. Returns (ok, error_message)."""
+    if not isinstance(body, dict):
+        return False, "userstate must be a JSON object"
+    return True, ""
+
+
 @app.route("/api/userstate", methods=["POST"])
 def set_userstate():
-    body = request.get_json(force=True)
+    body = request.get_json(force=True, silent=True)
+    ok, err = validate_userstate(body)
+    if not ok:
+        return jsonify(error=err), 400
+    if os.path.exists(USERSTATE):                      # keep one backup
+        try:
+            import shutil; shutil.copy2(USERSTATE, USERSTATE + ".bak")
+        except OSError:
+            pass
     _atomic_dump(body, USERSTATE, ensure_ascii=False, indent=2)
     return jsonify(ok=True)
 
