@@ -26,8 +26,10 @@ import base64
 import copy
 import json
 import os
+import platform
 import re
 import sqlite3
+import sys
 from collections import defaultdict
 
 import appconfig
@@ -924,6 +926,10 @@ def load_chat_members(conn) -> dict[int, list[int]]:
 
 
 def main() -> None:
+    if not os.environ.get("CRM_SKIP_ARCH_CHECK") and (
+            platform.system() != "Darwin" or platform.machine() != "arm64"):
+        sys.exit("build.py requires an Apple-Silicon Mac (MLX is arm64-only). "
+                 "Set CRM_SKIP_ARCH_CHECK=1 to override.")
     # Clear prior generated output so out/ always matches the current data
     # (entry ids are positional and shift between runs). Only ever touches
     # build artifacts under out/, never source data.

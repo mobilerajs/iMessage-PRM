@@ -7,6 +7,15 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
+  echo "This app requires an Apple-Silicon Mac (MLX is arm64-only). Detected: $(uname -s)/$(uname -m)." >&2
+  exit 1
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "python3 not found. Install Xcode Command Line Tools: xcode-select --install" >&2
+  exit 1
+fi
+
 PY=".venv/bin/python"
 
 # Building needs the local model deps (mlx-lm, numpy) — always use the venv's
