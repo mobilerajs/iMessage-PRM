@@ -51,6 +51,17 @@ pointing at the live database is one env var away (see below) and is a roadmap i
 
 ## What it does
 
+### Two interfaces (same data + engine)
+- **Search-first table — the default (`/`).** One search box and a dense, sortable
+  table; click a row to open that person in the **native Messages app**. Built for
+  "find someone fast." Semantic results add a **Match** column showing the exact bit of
+  thread that matched (click to expand), and a header line shows library counts
+  (people / groups / filtered).
+- **Classic list + chat (`/classic`).** The original sidebar list with an in-app
+  read-only thread pane and category chips.
+
+Both are served by the same backend and share categories, search, and your edits.
+
 ### Mutually-exclusive categories (a partition)
 Every person lands in **exactly one** category — no duplicates across chips:
 
@@ -80,11 +91,14 @@ reading conversations) — identity/topic descriptions correctly go semantic ins
 becoming a broad keyword match — and matching people are assigned to it **exclusively**.
 
 ### Fast hybrid semantic search
-Type a phrase ("people I ate pizza with", "restaurants in the bay area") → the local
-**embedding index** (bge-small) retrieves the nearest conversations in ~3 ms, a soft
-**category prior** nudges ranking toward the query's likely category, and the model
-**confirms** the top candidates with a recall-favoring *relevance* prompt (intent, not
-literal keyword match). ~2.5 s warm, vs ~2 min for the naive full-model scan it replaced.
+Type a phrase ("people I ate pizza with", "lunch spots in palo alto") → a local
+**embedding index** (bge-small) over the **full conversation content, chunked** into
+~25-message windows retrieves the nearest chunks in ~3 ms, aggregates them to people, a
+soft **category prior** nudges ranking toward the query's likely category, and the
+model **confirms** the top candidates against the **matched chunk** with a relevance
+prompt (intent, not literal keyword match). ~2.5 s warm, vs ~2 min for the naive
+full-model scan it replaced. (Embedding the full content — not a short digest sample —
+is what makes in-passing topics actually findable.)
 
 ### Relationship tooling
 - **Name inference → Contacts** — suggests full names for bare numbers and writes them
@@ -110,10 +124,10 @@ data/enrich_parts/ ──┘               out/embeddings.npy      (search index
 classify.py   local Qwen3-4B (MLX): category/work/family judgments, filter routing,
               semantic confirm, name inference
 embeddings.py local bge-small (MLX): build the search index + cosine retrieval
-server.py     Flask: serves the UI, keeps the model warm, exposes the API
+server.py     Flask: serves both UIs, keeps the model warm, exposes the API
               (/api/search, /api/filter, /api/contacts/*, /api/userstate, …)
-app.js        vanilla-JS frontend: exclusive-category rendering, multi-select,
-              search, the read-only thread pane
+take2/        vanilla-JS search-first table UI — the DEFAULT, served at /
+app.js        classic list + chat UI (exclusive-category chips, thread pane) — /classic
 ```
 
 - **Data flow:** `build.py` is the pipeline (parse → junk-filter → classify → write
@@ -152,16 +166,18 @@ This is a first pass; these are known, deliberate gaps:
   (e.g. the work/personal prompt was tuned against ~130 labels, ~68% precision / ~75%
   recall), not a maintained eval harness. There's no regression eval for search
   relevance or category accuracy.
-- **Light test coverage.** 53 unit tests cover the *pure* logic (read-only DB open,
-  category partition/priority, family veto, search re-rank, filter routing). The
+- **Light test coverage.** 62 unit tests cover the *pure* logic (read-only DB open,
+  category partition/priority, family veto, search re-rank, chunking/aggregation,
+  filter routing). The
   integration surfaces — Flask endpoints, AppleScript/Contacts, the model passes, the
   frontend — are **not** covered by automated tests and were verified manually.
 - **Uses a copy of `chat.db`, not the live database.** Live access works via env var +
   Full Disk Access (below) but isn't the default flow, and there's no installer.
 - **No email enrichment.** Work-vs-Personal is iMessage-only today; the `unsure` flag
   marks exactly the people the planned Gmail/Outlook step would resolve.
-- **UI is in flux.** The right-hand chat pane, category presentation, and search UX are
-  all still being shaped.
+- **UI is in flux.** Two interfaces coexist (search-first table is now the default;
+  the classic list+chat is at `/classic`) while the design settles — they're still
+  being shaped, not a final, polished product.
 - **No packaging/auto-update.** Re-running `build.py` is the manual seam a scheduled
   refresh would hook into.
 

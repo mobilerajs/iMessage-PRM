@@ -6,7 +6,7 @@ installer/onboarding flow would ask them once.
 
 ## Identity
 - **Your name** (`config.json: user_name`) — used to (a) exclude *you* from name
-  inference (so "Hi Raj" doesn't make the contact "Raj"), (b) anchor family by
+  inference (so "Hi Sam" doesn't make the contact "Sam"), (b) anchor family by
   surname. Currently defaults to the first card in the exported vCard.
 
 ## Data sources
