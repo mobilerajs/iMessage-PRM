@@ -16,3 +16,27 @@ def test_special_chars_are_stripped_not_injected():
 def test_empty_returns_empty():
     assert ks.to_fts_match("   ") == ""
     assert ks.to_fts_match('""') == ""
+
+def test_build_and_query_roundtrip(tmp_path):
+    db = str(tmp_path / "fts.db")
+    keys = ["pA", "pB", "pC"]
+    texts = [
+        "lets grab pizza on friday night",
+        "the wifi password is hunter2",
+        "meeting about the mortgage rate",
+    ]
+    ks.build_fts(keys, texts, db)
+    hits = ks.fts_query(db, ks.to_fts_match("pizza"), k=5)
+    assert [h[0] for h in hits] == ["pA"]          # key
+    assert "pizza" in hits[0][2].lower()           # snippet contains the term
+
+def test_phrase_query_matches_contiguous(tmp_path):
+    db = str(tmp_path / "fts.db")
+    ks.build_fts(["p1", "p2"], ["happy birthday to you", "happy to help, birthday soon"], db)
+    hits = ks.fts_query(db, ks.to_fts_match('"happy birthday"'), k=5)
+    assert [h[0] for h in hits] == ["p1"]          # only the contiguous phrase
+
+def test_query_empty_match_returns_empty(tmp_path):
+    db = str(tmp_path / "fts.db")
+    ks.build_fts(["p1"], ["hello"], db)
+    assert ks.fts_query(db, "", k=5) == []
