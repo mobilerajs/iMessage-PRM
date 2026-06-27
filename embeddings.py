@@ -84,6 +84,78 @@ def _l2_normalize(mat: np.ndarray) -> np.ndarray:
     return (mat / norms).astype(np.float32)
 
 
+# ---- chunked full-content index --------------------------------------------
+# The index embeds the FULL conversation, not a 6-message sample, so topics
+# mentioned in passing ("pizza") are retrievable. Each conversation is split into
+# fixed-size message WINDOWS; every window is embedded as its own row. Two caps
+# keep one giant thread from dominating the index:
+#   max_messages  -> consider only the most-recent N messages before chunking;
+#   max_chunks    -> if that still yields too many windows, sample windows EVENLY
+#                    across the conversation (not just the first/last).
+# Both helpers below are pure (no model): chunking is the build-time TDD target,
+# aggregation is the query-time chunk->person collapse.
+
+
+def _chunk_text(msgs):
+    """Render a window of message dicts to a single embeddable string.
+
+    Same WHO/text shape as classify.digest_text so the embedded text matches what
+    the conversation actually reads like, just over the full content.
+    """
+    lines = []
+    for m in msgs:
+        who = "ME" if m.get("me") else (m.get("from") or "THEM")
+        text = (m.get("text") or "")
+        if text:
+            lines.append(f"{who}: {text}")
+    return "\n".join(lines)
+
+
+def chunk_messages(msgs, window=25, max_messages=2000, max_chunks=60):
+    """Split a conversation's messages into embeddable chunk strings.
+
+    - Keep only the most-recent `max_messages` (a long thread can't dominate).
+    - Split into windows of `window` messages each (the LAST window may be short).
+    - If that yields more than `max_chunks` windows, sample `max_chunks` of them
+      EVENLY across the conversation (so the topic coverage spans the whole
+      thread, not just one end).
+
+    Returns a list of strings (one per chunk). Empty input -> []. Windows that
+    render to empty text (e.g. all attachments) are dropped.
+    """
+    if not msgs:
+        return []
+    if max_messages and len(msgs) > max_messages:
+        msgs = msgs[-max_messages:]
+    windows = [msgs[i:i + window] for i in range(0, len(msgs), window)]
+    if max_chunks and len(windows) > max_chunks:
+        # Even sampling: pick max_chunks indices spread across [0, len-1],
+        # always including the first and last window.
+        n = len(windows)
+        idxs = [round(j * (n - 1) / (max_chunks - 1)) for j in range(max_chunks)]
+        windows = [windows[i] for i in idxs]
+    chunks = [_chunk_text(w) for w in windows]
+    return [c for c in chunks if c]
+
+
+def aggregate_chunks_to_persons(hits):
+    """Collapse chunk-level hits to one best (score, chunk-text) per person key.
+
+    `hits` is an iterable of (key, score, chunk_text). Many chunks map to the same
+    conversation key; we keep the SINGLE best-scoring chunk per key (its score and
+    its text, so the confirm step can judge the real matched content). Returns a
+    list of (key, best_score, best_chunk_text) sorted by score descending.
+    """
+    best = {}  # key -> (score, text)
+    for key, score, text in hits:
+        cur = best.get(key)
+        if cur is None or score > cur[0]:
+            best[key] = (score, text)
+    out = [(k, s, t) for k, (s, t) in best.items()]
+    out.sort(key=lambda r: r[1], reverse=True)
+    return out
+
+
 # ---- category prior (soft boost) -------------------------------------------
 # A SOFT re-rank that nudges retrieval toward the query's likely category
 # without ever hiding strong cross-category matches. Three pure-numpy pieces:

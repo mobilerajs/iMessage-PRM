@@ -75,6 +75,24 @@ def digest_text(d):
             f"messages:\n" + "\n".join(lines))
 
 
+def _default_confirm_text(d):
+    """Text a confirm step reads for one item.
+
+    Honors an attached `__text` (e.g. the matched chunk from semantic search):
+    when present we prepend a small header (name + 1:1/group) so the model still
+    knows WHO it is judging, then show the real matched content. Falls back to the
+    compact digest when no chunk is supplied, so existing callers are unchanged.
+    """
+    text = d.get("__text") if isinstance(d, dict) else None
+    if text:
+        mem = (" members: " + ", ".join(d.get("members", [])[:6])) \
+            if d.get("kind") == "group" else ""
+        header = (f"name: {d.get('name')} "
+                  f"({'group' if d.get('kind') == 'group' else '1:1'}){mem}")
+        return f"{header}\nmessages:\n{text}"
+    return digest_text(d)
+
+
 def parse_one(out, options):
     o = out.strip().lower()
     for c in options:
@@ -137,21 +155,31 @@ def load_model():
     return load(MODEL)
 
 
-def batch_yesno(model, tok, digests, label, progress=None, batch=64, system=None):
+def batch_yesno(model, tok, digests, label, progress=None, batch=64, system=None,
+                text_fn=None):
     """Batched yes/no membership over all digests. Returns matching keys.
 
     `progress(done, total)` is called after each batch for live UIs. `system`
     overrides the default strict contact-filter prompt — search passes
     search_prompt(query) for recall-favoring topical relevance instead.
+
+    `text_fn(d)` overrides what the model READS for each item. By default the
+    model judges the compact digest (digest_text). Semantic search passes a
+    text_fn that returns the matched CHUNK text, so the confirm step judges the
+    real content that retrieval matched on (the chunk containing "pizza") rather
+    than the 6-message sample. Items carrying a `__text` field are honored by the
+    default reader too, so callers can simply attach the matched chunk. Existing
+    callers (filter creation) pass neither and keep using digest_text.
     """
     from mlx_lm import batch_generate
     sysmsg = system or strict_filter_prompt(label)
+    reader = text_fn or _default_confirm_text
     keys = []
     for i in range(0, len(digests), batch):
         chunk = digests[i:i + batch]
         prompts = [tok.apply_chat_template(
             [{"role": "system", "content": sysmsg},
-             {"role": "user", "content": digest_text(d) + "\n\nAnswer:"}],
+             {"role": "user", "content": reader(d) + "\n\nAnswer:"}],
             add_generation_prompt=True) for d in chunk]
         res = batch_generate(model, tok, prompts, max_tokens=4, verbose=False)
         texts = res.texts if hasattr(res, "texts") else res

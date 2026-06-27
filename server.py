@@ -22,6 +22,11 @@ FILTERS_OUT = os.path.join(HERE, "out/filters.json")
 USERSTATE = os.path.join(HERE, "data/userstate.json")
 EMBED_NPY = os.path.join(HERE, "out/embeddings.npy")
 EMBED_KEYS = os.path.join(HERE, "out/embedding_keys.json")
+# Chunk TEXT parallel to each row of the index, so the LLM confirm step can judge
+# the real matched content (the chunk containing the topic) rather than the old
+# 6-message digest sample. Optional: if missing we fall back to digest-based
+# confirm (old-format index) so search never breaks on a stale build.
+EMBED_CHUNKS = os.path.join(HERE, "out/embedding_chunks.json")
 
 # How many candidates the embedding index hands to the LLM confirm step. This is
 # the whole point of the hybrid: retrieval narrows ~1000 -> SEARCH_TOPK instantly,
@@ -35,11 +40,13 @@ SEARCH_TOPK = 25
 # prior only re-orders near-ties — a strong cross-category match still wins. This
 # is the "soft, not a filter" knob; raise it to bias harder toward the hint.
 PRIOR_ALPHA = 0.2
-# Wide raw-cosine net we re-rank before taking the top SEARCH_TOPK. Starting from
-# a net this much larger than SEARCH_TOPK is what keeps the prior soft: a strong
-# cross-category match makes the wide cut on raw cosine, then survives the modest
-# boost re-rank. (If we only re-ranked the narrow top-25 we'd risk dropping it.)
-SEARCH_WIDE_N = max(60, 2 * SEARCH_TOPK)
+# Wide raw-cosine net we re-rank before taking the top SEARCH_TOPK. The index is
+# now CHUNK-level (many chunks per person), so we pull a wider net of CHUNKS and
+# then aggregate to persons — a person can surface via any one matching chunk.
+# Starting from a net this much larger than SEARCH_TOPK is what keeps the prior
+# soft: a strong cross-category match makes the wide cut on raw cosine, then
+# survives the modest boost re-rank.
+SEARCH_WIDE_N = max(120, 4 * SEARCH_TOPK)
 
 
 def _load_filters():
@@ -146,10 +153,14 @@ threading.Thread(target=_load_model, daemon=True).start()
 # ---- embedding index (hybrid retrieval) ------------------------------------
 # Loaded lazily on first search and cached: the (N, d) matrix, its parallel key
 # list, and the warm embedder. All local/offline. Rebuilt by build.py.
-EMBED = {"matrix": None, "keys": None, "loaded": False, "error": None,
+EMBED = {"matrix": None, "keys": None, "chunks": None, "loaded": False,
+         "error": None,
          # Category prior: cached alongside the index. `centroids` is
-         # {category: unit vector}, `key_to_cat` maps embedding key -> base
-         # category (groups omitted). Both rebuilt whenever the index loads.
+         # {category: unit vector}, `key_to_cat` maps conversation key -> base
+         # category (groups omitted). With the chunk-level index, `keys` repeats
+         # a conversation key per chunk, so each category centroid is the mean of
+         # all CHUNK vectors whose conversation has that category. Both rebuilt
+         # whenever the index loads.
          "centroids": None, "key_to_cat": None}
 
 
@@ -157,10 +168,13 @@ def _build_centroids(matrix, keys):
     """Build per-category centroids from people.json base categories.
 
     Membership = each person's base `category` in out/people.json, matched to the
-    embedding key. Groups (kind=="group") and people with no category are skipped
-    (they get no centroid and contribute no boost). Best-effort: any failure
-    returns empty maps so search simply runs with no prior. Cheap: a dict lookup
-    per key plus a mean per category over ~1000 rows.
+    conversation key. With the CHUNK-level index, `keys` repeats a conversation
+    key once per chunk, so embeddings.category_centroids averages all CHUNK rows
+    whose conversation falls in that category — the centroid is built from the
+    chunk matrix grouped by each chunk's conversation category. Groups
+    (kind=="group") and people with no category are skipped (no centroid, no
+    boost). Best-effort: any failure returns empty maps so search runs with no
+    prior. Cheap: a dict lookup per chunk plus a mean per category.
     """
     try:
         import embeddings as _emb
@@ -179,12 +193,17 @@ def _build_centroids(matrix, keys):
 
 
 def _load_embed_index():
-    """Load out/embeddings.npy + out/embedding_keys.json + the embedder once.
+    """Load the chunk index (npy + keys + chunk texts) + the embedder once.
 
-    Cached process-wide. On any failure, EMBED['error'] is set and search falls
-    back to the legacy full keyword+model path so the endpoint never 500s just
-    because the index is missing/stale. Also builds the category-prior centroids
-    alongside the index (best-effort; their absence just means no boost).
+    The index is CHUNK-level: out/embeddings.npy has one row per chunk,
+    out/embedding_keys.json the conversation key for each row, and
+    out/embedding_chunks.json the chunk TEXT for each row. Cached process-wide.
+    On any failure, EMBED['error'] is set and search falls back to the legacy
+    full keyword+model path so the endpoint never 500s because the index is
+    missing/stale. The chunk-text file is OPTIONAL: an old-format index without
+    it still loads (EMBED['chunks'] stays None) and confirm falls back to the
+    digest. Also builds the category-prior centroids (best-effort; absence just
+    means no boost).
     """
     if EMBED["loaded"]:
         return EMBED["matrix"] is not None
@@ -197,8 +216,14 @@ def _load_embed_index():
         if matrix.shape[0] != len(keys):
             raise ValueError(
                 f"index/key length mismatch: {matrix.shape[0]} vs {len(keys)}")
+        # Chunk texts are optional (old-format index has none).
+        chunks = None
+        if os.path.exists(EMBED_CHUNKS):
+            chunks = json.load(open(EMBED_CHUNKS, encoding="utf-8"))
+            if len(chunks) != len(keys):
+                chunks = None  # mismatched/stale -> ignore, fall back to digest
         _emb.load_embedder()  # warm the model so first query is fast
-        EMBED["matrix"], EMBED["keys"] = matrix, keys
+        EMBED["matrix"], EMBED["keys"], EMBED["chunks"] = matrix, keys, chunks
         EMBED["centroids"], EMBED["key_to_cat"] = _build_centroids(matrix, keys)
         return True
     except Exception as exc:
@@ -207,47 +232,54 @@ def _load_embed_index():
 
 
 def _embed_candidates(q, digests, k=SEARCH_TOPK):
-    """Embed the query and return the top-k candidate digests via cosine top-k.
+    """Embed the query and return the top-k candidate PERSON digests.
 
-    Returns None if the index is unavailable (caller falls back to full scan).
-    The digests are returned in the order classify.smart_filter expects (a list
-    of digest dicts), filtered/ordered by retrieval score.
+    The index is chunk-level, so we take a wide net of CHUNKS, aggregate to one
+    best score per conversation key, and return the top-k person digests in that
+    order. Returns None if the index is unavailable (caller falls back to full
+    scan). Returns a list of digest dicts as classify.smart_filter expects.
     """
     if not _load_embed_index():
         return None
     import embeddings as _emb
     qvec = _emb.embed_query(q)
-    top = _emb.cosine_topk(qvec, EMBED["matrix"], k)
     keys = EMBED["keys"]
     dmap = {d["key"]: d for d in digests}
-    cands = []
-    for idx, _score in top:
-        d = dmap.get(keys[idx])
-        if d is not None:
-            cands.append(d)
-    return cands
+    # Wide chunk net (enough to cover k distinct persons after dedupe).
+    wide = _emb.cosine_topk(qvec, EMBED["matrix"], max(SEARCH_WIDE_N, 4 * k))
+    hits = [(keys[idx], score, "") for idx, score in wide if keys[idx] in dmap]
+    agg = _emb.aggregate_chunks_to_persons(hits)
+    return [dmap[key] for key, _s, _t in agg[:k]]
 
 
 def _search_candidates_with_prior(q, digests, k=SEARCH_TOPK):
-    """Search candidate selection with the SOFT category prior.
+    """Chunk-aware search candidate selection with the SOFT category prior.
 
     Returns (cands, category_hint, affinity):
-      - retrieve a WIDER raw-cosine top-N (SEARCH_WIDE_N) first;
+      - retrieve a WIDE raw-cosine net over CHUNKS (SEARCH_WIDE_N);
+      - AGGREGATE chunks -> persons: keep the best cosine score per conversation
+        key AND the single best-matching chunk TEXT for that person;
       - compute the query's affinity to each category centroid -> category_hint;
-      - re-rank the wide net by `raw_cosine + PRIOR_ALPHA * affinity[base_cat]`
-        and take the top `k` for the (unchanged) LLM confirm step.
+      - re-rank the aggregated persons by
+        `best_cosine + PRIOR_ALPHA * affinity[base_cat]` and take the top `k`.
+
+    Each returned candidate is a SHALLOW COPY of its digest with `__text` set to
+    the matched chunk, so the LLM confirm step judges the real matched content
+    (the chunk that contains the topic) instead of the 6-message sample.
 
     Because we start from the wide raw-cosine net and PRIOR_ALPHA is modest, a
     very strong cross-category match still survives the re-rank — the prior is a
     soft nudge, never a hard category filter. Falls back gracefully: returns
     (None, None, {}) if the index is unavailable; if centroids are missing it
-    behaves exactly like the old plain top-k (no boost), so search never 500s.
+    behaves like a plain top-k (no boost); if chunk texts are missing (old
+    index), `__text` is omitted and confirm uses the digest. Search never 500s.
     """
     if not _load_embed_index():
         return None, None, {}
     import embeddings as _emb
     qvec = _emb.embed_query(q)
     keys = EMBED["keys"]
+    chunks = EMBED.get("chunks")
     dmap = {d["key"]: d for d in digests}
 
     centroids = EMBED.get("centroids") or {}
@@ -255,21 +287,35 @@ def _search_candidates_with_prior(q, digests, k=SEARCH_TOPK):
     affinity = _emb.query_affinity(qvec, centroids) if centroids else {}
     category_hint = max(affinity, key=affinity.get) if affinity else None
 
-    # Wide raw-cosine net, but never below k (so we always have enough to return).
-    wide = _emb.cosine_topk(qvec, EMBED["matrix"], max(SEARCH_WIDE_N, k))
-    # Restrict to candidates we actually have digests for, preserving raw scores.
-    rows = [(keys[idx], score) for idx, score in wide if keys[idx] in dmap]
-    if not rows:
+    # Wide CHUNK net (multiple chunks per person), restricted to convos we have a
+    # digest for. Carry the chunk text so aggregation can keep the best snippet.
+    wide = _emb.cosine_topk(qvec, EMBED["matrix"], max(SEARCH_WIDE_N, 4 * k))
+    hits = []
+    for idx, score in wide:
+        key = keys[idx]
+        if key in dmap:
+            text = chunks[idx] if chunks else ""
+            hits.append((key, score, text))
+    if not hits:
         return [], category_hint, affinity
 
-    if affinity:
-        raw = [score for _key, score in rows]
-        cand_cats = [key_to_cat.get(key) for key, _score in rows]
-        order = _emb.soft_rerank(raw, cand_cats, affinity, alpha=PRIOR_ALPHA)
-        rows = [rows[i] for i in order]
-    # else: rows already in raw-cosine order (plain top-k, no boost).
+    # Aggregate chunks -> persons: best score + best chunk text per key.
+    agg = _emb.aggregate_chunks_to_persons(hits)  # [(key, best_score, best_text)]
 
-    cands = [dmap[key] for key, _score in rows[:k]]
+    # Soft category prior at the PERSON level (over the per-person best scores).
+    if affinity:
+        raw = [score for _key, score, _text in agg]
+        cand_cats = [key_to_cat.get(key) for key, _s, _t in agg]
+        order = _emb.soft_rerank(raw, cand_cats, affinity, alpha=PRIOR_ALPHA)
+        agg = [agg[i] for i in order]
+    # else: agg already in best-cosine order (plain top-k, no boost).
+
+    cands = []
+    for key, _score, text in agg[:k]:
+        d = dict(dmap[key])  # shallow copy so we don't mutate the cached digest
+        if text:
+            d["__text"] = text
+        cands.append(d)
     return cands, category_hint, affinity
 
 
@@ -289,6 +335,13 @@ def _filter_candidate_fn(label, digests):
 @app.route("/")
 def index():
     return send_from_directory(HERE, "index.html")
+
+
+@app.route("/take2/")
+def take2_index():
+    # "Second take": a separate search-first table UI for A/B testing, served from
+    # take2/ and backed by the same API. Static assets load via the catch-all.
+    return send_from_directory(os.path.join(HERE, "take2"), "index.html")
 
 
 @app.route("/<path:path>")
@@ -368,7 +421,9 @@ def semantic_search():
             # Hybrid: confirm ONLY the (prior-reranked) candidates — but with the
             # SEARCH relevance prompt (topical/intent, recall-favoring), not the
             # strict contact-filter prompt that would reject a topical query like
-            # "restaurants in the bay area".
+            # "restaurants in the bay area". Each candidate carries `__text` (the
+            # matched chunk), which batch_yesno's default reader uses so the model
+            # judges the real matched content, not the 6-message digest sample.
             keys = classify.batch_yesno(STATE["model"], STATE["tok"], cands, q,
                                         system=classify.search_prompt(q))
         # Round affinity for a compact, stable JSON payload.

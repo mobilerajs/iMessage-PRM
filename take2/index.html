@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>iMessage PRM — Second Take (search-first)</title>
+  <link rel="stylesheet" href="/take2/styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header id="head">
+      <div id="head-left">
+        <h1>iMessage PRM — Second Take <span class="sub">(search-first)</span></h1>
+        <a id="classic-link" href="/" title="Switch to the classic list + chat UI">↩ Classic UI</a>
+      </div>
+      <div id="search-wrap">
+        <input id="search" type="search" autocomplete="off" spellcheck="false"
+               placeholder="Search names — or describe a topic and press Enter…" />
+        <span id="search-spin" class="spin-dot" hidden></span>
+      </div>
+      <div id="controls">
+        <div id="views" role="group" aria-label="Views">
+          <button class="view-btn" data-view="recent">Recent</button>
+          <button class="view-btn" data-view="lost">Lost touch</button>
+        </div>
+        <div id="facets"></div>
+        <label class="opt-toggle" title="Hide bare phone numbers with no name or suggestion">
+          <input type="checkbox" id="hide-unnamed" /> Hide unnamed numbers
+        </label>
+        <label class="opt-toggle" id="groups-toggle" title="Groups aren't people — include them in the table">
+          <input type="checkbox" id="show-groups" /> Show groups
+        </label>
+      </div>
+      <div id="bulkbar" hidden></div>
+      <div id="status"></div>
+    </header>
+
+    <div id="table-scroll">
+      <table id="grid">
+        <thead>
+          <tr>
+            <th class="col-name"  data-sort="name">Name</th>
+            <th class="col-cat"   data-sort="category">Category</th>
+            <th class="col-last"  data-sort="last">Last contact</th>
+            <th class="col-count" data-sort="count">Messages</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div id="empty" hidden>No matches.</div>
+    </div>
+  </div>
+  <script src="/take2/app.js"></script>
+</body>
+</html>

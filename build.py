@@ -1028,6 +1028,7 @@ def main() -> None:
           f"custom filters: {list(custom_filters) or 'none'}")
     people = []
     digests = []  # compact per-convo summaries for agent analysis
+    convo_msgs = []  # (key, full msgs) for the chunked full-content embed index
     kept = dropped = excluded = empty = spam = alert = 0
     filtered_review = []  # what the auto rules removed, for the user to audit
     idx = 0
@@ -1177,6 +1178,8 @@ def main() -> None:
             "birthday_guess": birthday,
             "sample": sample,
         })
+        # Full message text for the chunked embedding index (built after refine).
+        convo_msgs.append((c["key"], msgs))
 
     # ------------------------------------------------------------------- #
     # Work-vs-Personal refinement of the deterministic-Personal catch-all.
@@ -1220,38 +1223,68 @@ def main() -> None:
           f"({len(digests)} convos) for enrichment.")
 
     # ------------------------------------------------------------------- #
-    # Embedding index for hybrid semantic search.
+    # Chunked full-content embedding index for hybrid semantic search.
     #
-    # Embed EVERY conversation digest (people AND groups — search covers group
-    # chats too) with the same digest text the LLM reads, into a plain numpy
-    # matrix. At ~1000 rows a small local model is seconds; a vector DB would be
-    # overkill. server.py loads out/embeddings.npy + out/embedding_keys.json to
-    # narrow 1000 → 25 candidates instantly before the LLM confirm. Skippable for
+    # ROOT-CAUSE FIX: the old index embedded only the 6-message digest SAMPLE per
+    # conversation, so a topic mentioned in passing (e.g. "pizza") was invisible
+    # to search. We now embed the FULL conversation, split into CHUNK windows of
+    # CHUNK_WINDOW messages each. Caps keep one giant thread from dominating:
+    # only the most-recent CHUNK_MAX_MESSAGES are considered, and at most
+    # CHUNK_MAX_CHUNKS windows per conversation (sampled evenly when over). Each
+    # chunk is one row; many rows share a conversation key.
+    #
+    # We write THREE parallel artifacts to out/ (gitignored):
+    #   embeddings.npy        (N_chunks, d) float32, L2-normalized
+    #   embedding_keys.json   conversation key for each chunk row
+    #   embedding_chunks.json the chunk TEXT for each row (so the confirm step
+    #                         can judge the real matched content, not the sample)
+    # server.py loads all three, does cosine top-K over CHUNKS, then aggregates
+    # chunks -> persons (best score + best chunk per key) before the LLM confirm.
+    # bge-small is fast (~thousands of short chunks in seconds). Skippable for
     # fast/test builds via CRM_SKIP_EMBED=1.
+    #
+    # Window size chosen: ~25 messages per chunk (short threads -> one chunk;
+    # long ones -> evenly-sampled windows). For this corpus (~1000 convos,
+    # ~150k msgs) that is roughly ~4–5k chunks.
     # ------------------------------------------------------------------- #
+    CHUNK_WINDOW = 25         # messages per chunk window
+    CHUNK_MAX_MESSAGES = 2000  # most-recent messages considered per conversation
+    CHUNK_MAX_CHUNKS = 60      # max chunks per conversation (even-sampled if over)
     if os.environ.get("CRM_SKIP_EMBED") == "1":
         print("  embeddings: CRM_SKIP_EMBED=1 — skipping index build.")
-    elif digests:
+    elif convo_msgs:
         import time as _time
         import numpy as np
-        import classify as _classify
         import embeddings as _embeddings
         t0 = _time.time()
-        texts = [_classify.digest_text(d) for d in digests]
-        matrix = _embeddings.embed_texts(texts)
-        keys = [d["key"] for d in digests]
+        # Build chunk rows: parallel lists of (key, chunk_text).
+        chunk_keys = []
+        chunk_texts = []
+        for key, msgs in convo_msgs:
+            for ctext in _embeddings.chunk_messages(
+                    msgs, window=CHUNK_WINDOW,
+                    max_messages=CHUNK_MAX_MESSAGES, max_chunks=CHUNK_MAX_CHUNKS):
+                chunk_keys.append(key)
+                chunk_texts.append(ctext)
+        print(f"  embeddings: chunking {len(convo_msgs)} convos -> "
+              f"{len(chunk_texts)} chunks (window {CHUNK_WINDOW} msgs, cap "
+              f"{CHUNK_MAX_CHUNKS}/convo); embedding...")
+        matrix = _embeddings.embed_texts(chunk_texts)
         # Snapshot any prior index before overwriting (out/ is gitignored, but a
         # rebuild shouldn't silently clobber a working index).
         npy_path = os.path.join(OUT, "embeddings.npy")
         keys_path = os.path.join(OUT, "embedding_keys.json")
-        for p in (npy_path, keys_path):
+        chunks_path = os.path.join(OUT, "embedding_chunks.json")
+        for p in (npy_path, keys_path, chunks_path):
             if os.path.exists(p):
                 import shutil
                 shutil.copy2(p, p + ".bak")
         np.save(npy_path, matrix)
         with open(keys_path, "w", encoding="utf-8") as f:
-            json.dump(keys, f, ensure_ascii=False)
-        print(f"  embeddings: indexed {matrix.shape[0]} convos "
+            json.dump(chunk_keys, f, ensure_ascii=False)
+        with open(chunks_path, "w", encoding="utf-8") as f:
+            json.dump(chunk_texts, f, ensure_ascii=False)
+        print(f"  embeddings: indexed {matrix.shape[0]} chunks "
               f"(dim {matrix.shape[1] if matrix.ndim == 2 else 0}) in "
               f"{_time.time() - t0:.1f}s -> {npy_path}")
 
