@@ -815,6 +815,14 @@ def apple_ns_to_iso(date_val: int) -> str:
     return _dt.datetime.fromtimestamp(secs + APPLE_EPOCH).isoformat(timespec="seconds")
 
 
+def merge_recency(last_1to1: str, group_iso: str) -> str:
+    """A person's effective recency: the later of their 1:1 thread's last message
+    and their own most-recent message in any shared group chat. Both are ISO
+    timestamps (same format), which compare correctly lexicographically; either
+    may be "" (no 1:1 thread, or no group activity)."""
+    return max(last_1to1 or "", group_iso or "")
+
+
 # --------------------------------------------------------------------------- #
 # Incremental embedding cache
 #
@@ -988,6 +996,10 @@ def main() -> None:
     # ------------------------------------------------------------------- #
     print("Reading messages...")
     convos: dict[str, dict] = {}
+    # Most recent date each person was active in ANY shared group chat (their own
+    # messages only). Used so someone you chat with daily in a group isn't flagged
+    # "lost touch" just because the 1:1 thread is old. See last_active below.
+    group_active: dict[str, str] = {}
 
     def get_convo(key, kind, name, raw_id="", in_contacts=False):
         c = convos.get(key)
@@ -1069,15 +1081,22 @@ def main() -> None:
         else:
             c["recv"] += 1
 
+        iso = apple_ns_to_iso(date_val)
         sender = "me"
         if is_group and not is_from_me:
-            sender = contact_label(handle_id)[0]
+            s_name, s_raw, _ = contact_label(handle_id)
+            sender = s_name
+            # Credit the sender with group activity so their recency reflects it.
+            if s_raw:
+                gk = "p" + norm_key(s_raw)
+                if iso > group_active.get(gk, ""):
+                    group_active[gk] = iso
         c["msgs"].append(
             {
                 "me": bool(is_from_me),
                 "from": sender,
                 "text": plain,
-                "date": apple_ns_to_iso(date_val),
+                "date": iso,
             }
         )
 
@@ -1217,6 +1236,9 @@ def main() -> None:
             "sent": c["sent"],
             "recv": c["recv"],
             "last_date": last["date"],
+            # Recency for the "Last contact" column / sort / lost-touch view:
+            # the later of the 1:1 thread and the person's own group activity.
+            "last_active": merge_recency(last["date"], group_active.get(c["key"], "")),
             "snippet": (snippet or "")[:120],
             "photo": photo_rel,
             "first_name": first_name,
@@ -1299,7 +1321,7 @@ def main() -> None:
     refine_family_pass(people, digest_by_key, vcard_owner(VCF_PATH))
 
     # Sort sidebar by most recent activity.
-    people.sort(key=lambda p: p["last_date"], reverse=True)
+    people.sort(key=lambda p: p.get("last_active") or p["last_date"], reverse=True)
     with open(os.path.join(OUT, "people.json"), "w", encoding="utf-8") as f:
         json.dump(people, f, ensure_ascii=False, indent=0)
 

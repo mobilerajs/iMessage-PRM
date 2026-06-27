@@ -186,7 +186,10 @@ function relTime(iso) {
 }
 
 function lastTs(p) {
-  const t = p.last_date ? new Date(p.last_date).getTime() : NaN;
+  // Recency = later of the 1:1 thread and the person's group activity, so
+  // someone you chat with daily in a group isn't shown as "lost touch".
+  const iso = p.last_active || p.last_date;
+  const t = iso ? new Date(iso).getTime() : NaN;
   return isFinite(t) ? t : 0;
 }
 
@@ -496,7 +499,7 @@ function rowHtml(p) {
   return `<tr class="${cls}"${dataKey}${dataOpen}${title}>` +
     `<td class="col-name">${nameCell}</td>` +
     `<td class="col-cat">${pill}</td>` +
-    `<td class="col-last">${escapeHtml(relTime(p.last_date))}</td>` +
+    `<td class="col-last">${escapeHtml(relTime(p.last_active || p.last_date))}</td>` +
     `<td class="col-count">${p.count || 0}</td>` +
     matchCell +
     `</tr>`;
