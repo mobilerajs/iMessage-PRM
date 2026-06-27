@@ -597,12 +597,8 @@ async function onEnter() {
   const q = searchEl.value.trim();
   if (!q) { clearSearch(); return; }
 
-  const tokens = tokenize(q);
-  const instantHits = currentInstantHitCount(tokens);
-  const multiWord = tokens.length > 1;
-
-  if (!multiWord && instantHits > 0) return; // fast instant view is enough
-
+  // Pressing Enter ALWAYS runs a content search now (single-word topics like
+  // "pizza" work too; quoted phrases run an exact/literal search server-side).
   // Show a clear loading state in the CONTENT area (a semantic search takes a
   // couple seconds); the tiny search-box dot was easy to miss / jittered.
   const lt = document.getElementById("loading-text");
@@ -630,18 +626,6 @@ async function onEnter() {
   }
   loadingEl.hidden = true;
   render();
-}
-
-function currentInstantHitCount(tokens) {
-  if (!tokens.length) return 0;
-  let rows = state.all;
-  if (!state.showGroups) rows = rows.filter((p) => p.kind !== "group");
-  let n = 0;
-  for (const p of rows) {
-    const toks = tokenize(p.name).concat(tokenize(p.suggested_name));
-    if (tokens.every((q) => toks.some((t) => t.startsWith(q)))) n++;
-  }
-  return n;
 }
 
 function clearSearch() {
