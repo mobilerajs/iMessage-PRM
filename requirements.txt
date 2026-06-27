@@ -1,6 +1,7 @@
 # Runtime dependencies for the local iMessage PRM. Everything runs on-device;
-# nothing here makes a network call at query time (models download once at
-# install). Pinned loosely to the MLX stack so there is NO torch dependency.
+# nothing here makes a network call at query time (models download lazily on
+# first build/serve, then are cached). Pinned loosely to the MLX stack so there
+# is NO torch dependency.
 
 # Web server for the local UI + API.
 Flask>=3.1

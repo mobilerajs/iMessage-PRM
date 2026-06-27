@@ -19,28 +19,48 @@ It's a **view, not a system of record** — a read-only lens over your messages,
 
 ---
 
+## Requirements
+
+- **Apple-Silicon Mac** (M1 or later) — MLX is arm64-only.
+- **macOS** with **Python 3.x** and the **Xcode Command Line Tools** (`xcode-select --install`).
+- **~3 GB free disk** for the on-device models.
+- **Network access on the first run only** (to download the models — see below).
+
 ## Quick start
 
 ```bash
-# 1. Put two files in ./data (see Setup below):
+# 1. One-time: create the venv + install deps
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+
+# 2. Configure: copy the example and set your name
+cp config.example.json config.json   # then edit "user_name"
+
+# 3. Put two source files in ./data (see Setup below):
 #    data/chat.db        a copy of ~/Library/Messages/chat.db
 #    data/contacts.vcf   Contacts.app → Export vCard
 
-# 2. One-time: create the venv + install deps
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-
-# 3. Build the dataset + serve (model loads warm)
+# 4. Build the dataset + serve (first run downloads models — see below)
 ./start.sh            # http://localhost:8001
 ./start.sh --rebuild  # force a fresh rebuild first
 ```
 
-`cp config.example.json config.json` and set your name (used to anchor family
-detection and to avoid suggesting your own name back to you).
+Setting `user_name` in `config.json` is used to anchor family detection and to
+avoid suggesting your own name back to you.
+
+### First-run model download
+
+The **first** build/serve downloads the on-device models from Hugging Face: the
+Qwen3-4B classifier (~2.5 GB) and the bge-small embedding model. This happens
+**once**, needs **network access**, and takes a few minutes; afterwards the models
+are cached locally and nothing leaves your machine. See
+[`docs/SETUP-QUESTIONS.md`](docs/SETUP-QUESTIONS.md) for more.
 
 ### Setup (the two source files)
 
-- **`data/chat.db`** — a copy of `~/Library/Messages/chat.db`. Quit Messages first so
-  it isn't mid-write; copy `chat.db-wal`/`chat.db-shm` too for the most recent texts.
+- **`data/chat.db`** — a copy of `~/Library/Messages/chat.db`. **Fully quit Messages
+  (⌘Q) before copying** so it flushes pending writes — the DB is opened `immutable=1`,
+  which ignores any separate `-wal` file, so the copied `chat.db` must already contain
+  your latest messages.
 - **`data/contacts.vcf`** — Contacts.app → ⌘A → File → Export → Export vCard… (names + photos).
 
 The database is **always opened read-only + immutable** — the app physically cannot
