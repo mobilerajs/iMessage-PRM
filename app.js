@@ -458,8 +458,10 @@ function renderHeader() {
     const base = th.textContent.replace(/[ ▲▼]+$/, "").trim();
     if (k === state.sortKey) {
       th.innerHTML = `${escapeHtml(base)}<span class="arrow">${state.sortDir === "asc" ? "▲" : "▼"}</span>`;
+      th.setAttribute("aria-sort", state.sortDir === "asc" ? "ascending" : "descending");
     } else {
       th.textContent = base;
+      th.removeAttribute("aria-sort");
     }
   });
   // Dynamic, non-sortable Match column header — present only in semantic mode.
@@ -1013,10 +1015,9 @@ facetsEl.addEventListener("click", (e) => {
   render();
 });
 
-theadEl.addEventListener("click", (e) => {
-  const th = e.target.closest("th");
-  if (!th) return;
-  const k = th.dataset.sort;
+// Toggle/select the sort for a sortable header (shared by click + keyboard).
+function sortByHeader(th) {
+  const k = th && th.dataset.sort;
   if (!k) return;  // non-sortable header (e.g. the Match column) — ignore
   if (state.sortKey === k) {
     state.sortDir = state.sortDir === "asc" ? "desc" : "asc";
@@ -1025,6 +1026,20 @@ theadEl.addEventListener("click", (e) => {
     state.sortDir = (k === "name" || k === "category") ? "asc" : "desc";
   }
   render();
+}
+
+theadEl.addEventListener("click", (e) => {
+  sortByHeader(e.target.closest("th"));
+});
+
+// Keyboard-operable headers: Enter/Space triggers the same sort as a click.
+// preventDefault on Space so the page doesn't scroll.
+theadEl.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  const th = e.target.closest("th[data-sort]");
+  if (!th) return;
+  e.preventDefault();
+  sortByHeader(th);
 });
 
 // Table clicks: route between (a) row checkbox select, (b) category pill menu,
