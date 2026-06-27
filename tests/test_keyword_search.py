@@ -40,3 +40,18 @@ def test_query_empty_match_returns_empty(tmp_path):
     db = str(tmp_path / "fts.db")
     ks.build_fts(["p1"], ["hello"], db)
     assert ks.fts_query(db, "", k=5) == []
+
+def test_rrf_rewards_agreement():
+    # Key present high in BOTH lists beats a key high in only one.
+    semantic = ["a", "b", "c"]
+    keyword = ["b", "a", "d"]
+    fused = ks.rrf_fuse([semantic, keyword])
+    assert fused[0] in ("a", "b")        # a and b appear in both, top of result
+    assert set(fused[:2]) == {"a", "b"}
+    assert fused.index("c") > 1 and fused.index("d") > 1
+
+def test_rrf_handles_empty_and_dupes():
+    assert ks.rrf_fuse([[], []]) == []
+    # duplicate key within one list counts only its best (first) rank
+    fused = ks.rrf_fuse([["a", "a", "b"], ["b"]])
+    assert fused == ["b", "a"]           # b in both -> higher

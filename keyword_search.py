@@ -69,3 +69,23 @@ def fts_query(db_path, match, k=25):
         con.close()
     # bm25 returns more-negative = better; expose as positive "higher is better".
     return [(key, -s, snip) for (key, s, snip) in rows]
+
+
+def rrf_fuse(ranked_lists, k=60):
+    """Reciprocal Rank Fusion of several ranked key-lists into one ordering.
+    score(key) = sum over lists of 1/(k + rank), rank 0-based, first occurrence
+    only. No score normalization needed across cosine/BM25 — that's the point."""
+    scores = {}
+    for lst in ranked_lists:
+        seen = set()
+        for rank, key in enumerate(lst):
+            if key in seen:
+                continue
+            seen.add(key)
+            scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank)
+    # Sort by fused score desc; ties keep first-seen order for determinism.
+    order = {}
+    for lst in ranked_lists:
+        for key in lst:
+            order.setdefault(key, len(order))
+    return sorted(scores, key=lambda key: (-scores[key], order[key]))
