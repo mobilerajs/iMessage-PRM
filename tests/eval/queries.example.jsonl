@@ -1,0 +1,3 @@
+{"q": "pizza", "type": "topic", "relevant": ["pA"]}
+{"q": "\"happy birthday\"", "type": "literal", "relevant": ["pB"]}
+{"q": "mortgage rate", "type": "topic", "relevant": ["pC"]}

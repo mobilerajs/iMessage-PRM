@@ -17,3 +17,8 @@ __pycache__/
 
 # One-off local debug helper (not product code)
 spikes/run_kids_friends.py
+
+# Eval gold set + baseline — reference real conversation keys (PII); local only.
+# Synthetic, PII-free queries.example.jsonl IS committed; these are not.
+tests/eval/queries.jsonl
+tests/eval/baseline.json
