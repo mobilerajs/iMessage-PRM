@@ -334,13 +334,21 @@ def _filter_candidate_fn(label, digests):
 # ---- static UI -------------------------------------------------------------
 @app.route("/")
 def index():
+    # The search-first table UI (lives in take2/) is now the default. Its assets
+    # load via absolute /take2/ paths, so serving it at the root works directly.
+    return send_from_directory(os.path.join(HERE, "take2"), "index.html")
+
+
+# Old list + chat UI, kept available. No trailing slash so its RELATIVE asset
+# paths (app.js, styles.css) resolve to the root where those files live.
+@app.route("/classic")
+def classic_index():
     return send_from_directory(HERE, "index.html")
 
 
 @app.route("/take2/")
 def take2_index():
-    # "Second take": a separate search-first table UI for A/B testing, served from
-    # take2/ and backed by the same API. Static assets load via the catch-all.
+    # Back-compat alias for the old /take2/ URL (now the default at /).
     return send_from_directory(os.path.join(HERE, "take2"), "index.html")
 
 
