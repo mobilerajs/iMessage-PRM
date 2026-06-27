@@ -303,12 +303,34 @@ async function load() {
   // Optional, non-blocking model-status hint for first semantic search. Also
   // tells us the local server is up, so we can reveal the Refresh button (it
   // stays hidden in static/file mode, where /api/refresh wouldn't exist).
+  pollModelStatus();
+}
+
+// Poll /api/status until the model is ready. While it reports model_loading,
+// keep a persistent banner in #status (visible at rest, not only during a
+// search) so the first-search slowness is never a surprise; clear it once the
+// model flips to ready. The banner only shows while idle (no active search /
+// instant filter), so it never stomps a real search-status message.
+let modelLoading = false;
+function pollModelStatus() {
   fetch("/api/status").then((r) => r.json()).then((s) => {
-    if (s && s.model_loading === true) {
-      statusEl.dataset.modelHint = "Model still loading — first search may be slow.";
-    }
     if (refreshBtn) refreshBtn.hidden = false;  // server is reachable
-  }).catch(() => { /* static mode: leave Refresh hidden */ });
+    const loading = !!(s && s.model_loading === true);
+    if (loading) {
+      modelLoading = true;
+      statusEl.dataset.modelHint = "Model loading — first search may be slow.";
+      // Show the persistent banner only when nothing else owns #status.
+      if (!state.semantic && !state.instantTokens.length) {
+        statusEl.textContent = statusEl.dataset.modelHint;
+      }
+      setTimeout(pollModelStatus, 2000);
+    } else if (modelLoading) {
+      // Just flipped ready: drop the hint and clear a stale banner.
+      modelLoading = false;
+      delete statusEl.dataset.modelHint;
+      if (!state.semantic && !state.instantTokens.length) renderStatus(currentRows().length);
+    }
+  }).catch(() => { /* static mode: leave Refresh hidden, no banner */ });
 }
 
 /* ---------------- Facets (driven by effectiveCategory) ---------------- */
