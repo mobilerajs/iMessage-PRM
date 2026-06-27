@@ -227,7 +227,7 @@ body {
 td.col-name { display: flex; align-items: center; gap: 10px; }
 .rowcheck {
   flex: 0 0 16px; width: 16px; display: flex; align-items: center; justify-content: center;
-  opacity: 0; transition: opacity 0.1s;
+  opacity: 0.45; transition: opacity 0.1s;
 }
 tr.person:hover .rowcheck, tr.checked .rowcheck { opacity: 1; }
 .rowcheck input { width: 15px; height: 15px; margin: 0; cursor: pointer; accent-color: var(--blue); }
