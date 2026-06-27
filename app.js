@@ -334,7 +334,37 @@ function pollModelStatus() {
 }
 
 /* ---------------- Facets (driven by effectiveCategory) ---------------- */
+// The facet chips depend ONLY on: the person set, each person's effectiveCategory
+// (manual override / user-category membership / base category), and which facet
+// is currently active (the "on" highlight). They do NOT depend on the search
+// tokens, sort, expand state, view, or the groups/hide-unnamed toggles. So we
+// memoize the rendered chips on a cheap signature of exactly those inputs and
+// skip the (full-array) recompute + DOM write when nothing facet-relevant moved.
+// This keeps every keystroke off the facet path while preserving identical
+// output whenever a category move / bulk-move / data reload DOES change them.
+let _facetSig = null;
+function facetSignature() {
+  // people count + a digest of category assignments + the active facet.
+  let people = 0;
+  let h = 0;
+  for (const p of state.all) {
+    if (p.kind !== "person") continue;
+    people++;
+    const c = effectiveCategory(p) || "—";
+    // Order-independent contribution per person (key + its effective category)
+    // so any reassignment changes the digest, but row order/sort does not.
+    let ph = 0;
+    const s = p.key + " " + c;
+    for (let i = 0; i < s.length; i++) ph = (ph * 31 + s.charCodeAt(i)) >>> 0;
+    h = (h + ph) >>> 0;
+  }
+  return `${people}:${h}:${state.category || ""}`;
+}
+
 function buildFacets() {
+  const sig = facetSignature();
+  if (sig === _facetSig) return;   // nothing facet-relevant changed; skip DOM
+  _facetSig = sig;
   const counts = new Map();
   for (const p of state.all) {
     if (p.kind !== "person") continue;
@@ -638,15 +668,33 @@ function renderBulkBar() {
 function clearSelection() { state.selected.clear(); }
 
 /* ---------------- Search behavior ---------------- */
+// Debounce the per-keystroke TABLE re-render so rapid typing coalesces into one
+// render(), instead of rebuilding all ~742-1028 rows on every keystroke. The
+// search box's own value updates instantly (the browser owns the input);
+// onInput updates the instant tokens synchronously (so onEnter / a flush always
+// sees the latest query) but defers the expensive render(). Only this
+// per-keystroke path is debounced — every other caller of render() is untouched.
+const INPUT_DEBOUNCE_MS = 120;
+let _inputTimer = null;
+function flushInputRender() {
+  if (_inputTimer !== null) { clearTimeout(_inputTimer); _inputTimer = null; }
+}
+
 function onInput() {
   const q = searchEl.value.trim();
   state.semantic = null;
   spinEl.hidden = true;
+  // Update tokens synchronously so a flush / onEnter always reflects the latest
+  // keystroke; only the table re-render is debounced.
   state.instantTokens = q ? tokenize(q) : [];
-  render();
+  if (_inputTimer !== null) clearTimeout(_inputTimer);
+  _inputTimer = setTimeout(() => { _inputTimer = null; render(); }, INPUT_DEBOUNCE_MS);
 }
 
 async function onEnter() {
+  // Cancel any pending debounced instant-filter render; the semantic search
+  // below supersedes it and instantTokens were already updated in onInput.
+  flushInputRender();
   const q = searchEl.value.trim();
   if (!q) { clearSearch(); return; }
 
@@ -685,6 +733,7 @@ async function onEnter() {
 }
 
 function clearSearch() {
+  flushInputRender();   // drop any pending debounced instant-filter render
   searchEl.value = "";
   state.instantTokens = [];
   state.semantic = null;
