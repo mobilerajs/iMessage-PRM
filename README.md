@@ -212,7 +212,9 @@ This is a first pass; these are known, deliberate gaps:
 
 ## Pointing at the live database
 
-Source paths default to `./data` but aren't hardcoded — override via env vars:
+Any setting can be overridden by an env var (e.g. `CHAT_DB`), which beats
+`config.json`, which beats the built-in default. Source paths default to `./data`
+but aren't hardcoded — override via env vars:
 
 ```bash
 CHAT_DB=~/Library/Messages/chat.db \

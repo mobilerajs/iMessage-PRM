@@ -1,6 +1,7 @@
 {
   "user_name": "Your Name",
   "model": "mlx-community/Qwen3-4B-Instruct-2507-4bit",
+  "embed_model": "mlx-community/bge-small-en-v1.5-bf16",
   "chat_db": "data/chat.db",
   "contacts_vcf": "data/contacts.vcf"
 }
