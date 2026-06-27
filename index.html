@@ -39,11 +39,11 @@
         </label>
       </div>
       <div id="bulkbar" hidden></div>
-      <div id="status"></div>
+      <div id="status" aria-live="polite"></div>
     </header>
 
     <div id="table-scroll">
-      <div id="loading" hidden><span class="spin-dot spin-lg"></span><span id="loading-text">Searching…</span></div>
+      <div id="loading" role="status" aria-live="polite" hidden><span class="spin-dot spin-lg"></span><span id="loading-text">Searching…</span></div>
       <table id="grid">
         <thead>
           <tr>
