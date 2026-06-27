@@ -102,6 +102,7 @@ function categoryTargets() {
 const $ = (sel) => document.querySelector(sel);
 const searchEl = $("#search");
 const spinEl = $("#search-spin");
+const loadingEl = $("#loading");
 const statusEl = $("#status");
 const rowsEl = $("#rows");
 const emptyEl = $("#empty");
@@ -390,11 +391,15 @@ function renderHeader() {
 function renderStatus(n) {
   if (state.semantic) {
     const s = state.semantic;
+    const collapse = state.expanded.size
+      ? ` · <a id="collapse-all">Collapse all (${state.expanded.size})</a>` : "";
     statusEl.innerHTML =
       `${s.n} result${s.n === 1 ? "" : "s"} for “${escapeHtml(s.q)}”` +
       (s.ms ? ` · ${Math.round(s.ms)}ms` : "") +
-      ` · <a id="clear">Clear</a>`;
+      ` · <a id="clear">Clear</a>` + collapse;
     const c = $("#clear"); if (c) c.onclick = clearSearch;
+    const ca = $("#collapse-all");
+    if (ca) ca.onclick = () => { state.expanded.clear(); render(); };
     return;
   }
   if (state.instantTokens.length) {
@@ -547,10 +552,13 @@ async function onEnter() {
 
   if (!multiWord && instantHits > 0) return; // fast instant view is enough
 
-  spinEl.hidden = false;
-  statusEl.innerHTML = `<span class="searching">searching…` +
-    (statusEl.dataset.modelHint ? ` ${escapeHtml(statusEl.dataset.modelHint)}` : "") +
-    `</span>`;
+  // Show a clear loading state in the CONTENT area (a semantic search takes a
+  // couple seconds); the tiny search-box dot was easy to miss / jittered.
+  const lt = document.getElementById("loading-text");
+  if (lt) lt.textContent = `Searching for “${q}”…` +
+    (statusEl.dataset.modelHint ? ` ${statusEl.dataset.modelHint}` : "");
+  loadingEl.hidden = false;
+  statusEl.textContent = "";
   try {
     const r = await fetch("/api/search?q=" + encodeURIComponent(q));
     const data = await r.json();
@@ -566,10 +574,10 @@ async function onEnter() {
     };
   } catch (e) {
     statusEl.textContent = "Search failed.";
-    spinEl.hidden = true;
+    loadingEl.hidden = true;
     return;
   }
-  spinEl.hidden = true;
+  loadingEl.hidden = true;
   render();
 }
 
@@ -627,6 +635,7 @@ theadEl.addEventListener("click", (e) => {
   const th = e.target.closest("th");
   if (!th) return;
   const k = th.dataset.sort;
+  if (!k) return;  // non-sortable header (e.g. the Match column) — ignore
   if (state.sortKey === k) {
     state.sortDir = state.sortDir === "asc" ? "desc" : "asc";
   } else {
@@ -651,10 +660,13 @@ rowsEl.addEventListener("click", (e) => {
     renderBulkBar();
     return;
   }
-  // (b) Match snippet -> toggle truncated/full. Never opens Messages.
-  const snip = e.target.closest(".snip");
-  if (snip) {
+  // (b) Match snippet -> toggle truncated/full. The WHOLE cell is clickable
+  // (not just the text), so you don't have to aim precisely. Never opens Messages.
+  const matchCell = e.target.closest("td.col-match");
+  if (matchCell) {
     e.stopPropagation();
+    const snip = matchCell.querySelector(".snip");
+    if (!snip) return;
     const key = snip.dataset.key;
     if (state.expanded.has(key)) state.expanded.delete(key); else state.expanded.add(key);
     // Re-render just this cell to keep other rows / scroll position stable.
