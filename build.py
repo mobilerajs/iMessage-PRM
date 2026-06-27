@@ -747,7 +747,12 @@ def parse_vcard(path: str):
     name_by_key: dict[str, str] = {}
     photo_by_key: dict[str, bytes] = {}
     if not os.path.exists(path):
-        print(f"  ! no vCard at {path} — names will fall back to numbers")
+        print("\n" + "!" * 60)
+        print(f"! NO vCARD at {path}")
+        print("! Names will fall back to raw phone numbers. Export Contacts:")
+        print("!   Contacts.app -> Cmd-A -> File -> Export -> Export vCard...")
+        print("!   then save as data/contacts.vcf (or set CONTACTS_VCF).")
+        print("!" * 60 + "\n")
         return name_by_key, photo_by_key
 
     with open(path, "r", encoding="utf-8", errors="replace") as fh:
