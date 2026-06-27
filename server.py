@@ -346,6 +346,60 @@ def _search_candidates_with_prior(q, digests, k=SEARCH_TOPK):
     return cands, category_hint, affinity
 
 
+FTS_DB = os.path.join(HERE, "out", "fts.db")
+
+
+def _keyword_candidates(q, dmap, k=SEARCH_TOPK):
+    """[(key, snippet)] from the FTS5 index, deduped to best rank per key.
+    Restricted to keys we have a digest for. [] if index missing."""
+    import keyword_search as _ks
+    if not os.path.exists(FTS_DB):
+        return []
+    hits = _ks.fts_query(FTS_DB, _ks.to_fts_match(q), k=max(k, 40))
+    out, seen = [], set()
+    for key, _score, snip in hits:
+        if key in dmap and key not in seen:
+            seen.add(key)
+            out.append((key, snip))
+    return out
+
+
+def _hybrid_candidates(q, digests, k=SEARCH_TOPK):
+    """Fuse semantic (prior-reranked) and keyword (BM25) candidate lists via RRF.
+    Returns (cands, category_hint, affinity, is_literal). Each cand is a digest
+    copy with __text set to its matched snippet (keyword snippet preferred when
+    that's why it surfaced). Falls back to semantic-only if the FTS index is
+    absent, and to keyword-only/[] if the embedding index is absent."""
+    import keyword_search as _ks
+    dmap = {d["key"]: d for d in digests}
+    sem_cands, category_hint, affinity = _search_candidates_with_prior(q, digests, k=max(k, 40))
+    kw = _keyword_candidates(q, dmap, k=max(k, 40))
+    is_literal = _ks.is_phrase_query(q)
+
+    sem_keys = [c["key"] for c in (sem_cands or [])]
+    kw_keys = [key for key, _snip in kw]
+    kw_snip = {key: snip for key, snip in kw}
+    sem_text = {c["key"]: c.get("__text", "") for c in (sem_cands or [])}
+
+    if is_literal:
+        fused_keys = kw_keys[:k]                       # literal: keyword only
+    elif sem_cands is None:
+        fused_keys = kw_keys[:k]                       # no embedding index
+    else:
+        fused_keys = _ks.rrf_fuse([sem_keys, kw_keys])[:k]
+
+    cands = []
+    for key in fused_keys:
+        if key not in dmap:
+            continue
+        d = dict(dmap[key])
+        text = kw_snip.get(key) or sem_text.get(key) or ""
+        if text:
+            d["__text"] = text
+        cands.append(d)
+    return cands, category_hint, affinity, is_literal
+
+
 # Candidate-generator hook for classify.smart_filter: embedding top-K instead of
 # the keyword pre-filter, so category creation / refine is also hybrid-fast.
 # K~40 (a touch wider than search's 25 — a saved category should err toward
@@ -459,19 +513,21 @@ def semantic_search():
     try:
         t0 = time.time()
         digests = json.load(open(os.path.join(HERE, "out/digests.json")))
-        cands, category_hint, affinity = _search_candidates_with_prior(
+        cands, category_hint, affinity, is_literal = _hybrid_candidates(
             q, digests, k=SEARCH_TOPK)
-        if cands is None:
-            # Index unavailable — legacy full path (keyword prefilter + confirm).
-            keys, _keywords, _ncand = classify.smart_filter(
-                STATE["model"], STATE["tok"], digests, q)
+        if not cands and not os.path.exists(FTS_DB) and not _load_embed_index():
+            # Neither index available — legacy full path (keyword prefilter + confirm).
+            keys = classify.smart_filter(STATE["model"], STATE["tok"], digests, q)[0]
+        elif is_literal:
+            # Quoted phrase: trust BM25 exact matches, skip the LLM confirm.
+            keys = [c["key"] for c in cands]
         else:
-            # Hybrid: confirm ONLY the (prior-reranked) candidates — but with the
-            # SEARCH relevance prompt (topical/intent, recall-favoring), not the
-            # strict contact-filter prompt that would reject a topical query like
-            # "restaurants in the bay area". Each candidate carries `__text` (the
-            # matched chunk), which batch_yesno's default reader uses so the model
-            # judges the real matched content, not the 6-message digest sample.
+            # Hybrid: confirm ONLY the (prior-reranked + keyword-fused) candidates —
+            # but with the SEARCH relevance prompt (topical/intent, recall-favoring),
+            # not the strict contact-filter prompt that would reject a topical query
+            # like "restaurants in the bay area". Each candidate carries `__text`
+            # (the matched chunk/snippet), which batch_yesno's default reader uses so
+            # the model judges the real matched content, not the 6-message sample.
             keys = classify.batch_yesno(STATE["model"], STATE["tok"], cands, q,
                                         system=classify.search_prompt(q))
         # Round affinity for a compact, stable JSON payload.
