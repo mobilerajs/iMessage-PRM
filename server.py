@@ -10,13 +10,21 @@ CLI. The model is loaded once and kept warm, so each filter is just inference.
 This is the seam for packaging the app as something installable: one process
 that owns the model, the data, and the UI.
 """
-import datetime, json, os, re, subprocess, sys, threading, time, uuid
+import datetime, json, os, re, sqlite3, subprocess, sys, threading, time, uuid
 from flask import Flask, request, jsonify, send_from_directory
 
 import classify
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get("PORT", "8001"))
+# The working DB path the build reads (mirrors build.py's CHAT_DB default of
+# data/chat.db). Refresh snapshots the live Messages DB into THIS file, then
+# rebuilds from it. Kept in sync with build.py so a custom CHAT_DB is honored.
+CHAT_DB = os.path.expanduser(
+    os.environ.get("CHAT_DB", os.path.join(HERE, "data", "chat.db")))
+# The live, on-device Messages database. Reading it requires Full Disk Access.
+LIVE_CHAT_DB = os.path.expanduser("~/Library/Messages/chat.db")
+STATS_OUT = os.path.join(HERE, "out", "stats.json")
 FILTERS_DATA = os.path.join(HERE, "data/filters.json")
 FILTERS_OUT = os.path.join(HERE, "out/filters.json")
 USERSTATE = os.path.join(HERE, "data/userstate.json")
@@ -334,22 +342,7 @@ def _filter_candidate_fn(label, digests):
 # ---- static UI -------------------------------------------------------------
 @app.route("/")
 def index():
-    # The search-first table UI (lives in take2/) is now the default. Its assets
-    # load via absolute /take2/ paths, so serving it at the root works directly.
-    return send_from_directory(os.path.join(HERE, "take2"), "index.html")
-
-
-# Old list + chat UI, kept available. No trailing slash so its RELATIVE asset
-# paths (app.js, styles.css) resolve to the root where those files live.
-@app.route("/classic")
-def classic_index():
     return send_from_directory(HERE, "index.html")
-
-
-@app.route("/take2/")
-def take2_index():
-    # Back-compat alias for the old /take2/ URL (now the default at /).
-    return send_from_directory(os.path.join(HERE, "take2"), "index.html")
 
 
 @app.route("/<path:path>")
@@ -751,6 +744,98 @@ def infer_names():
             subprocess.run([sys.executable, "classify.py", "--names"], cwd=HERE, check=True, capture_output=True)
             subprocess.run([sys.executable, "build.py"], cwd=HERE, check=True, capture_output=True)
             JOBS[job_id].update(state="done", message="done", result={"ok": True})
+        except Exception as exc:
+            JOBS[job_id].update(state="error", message=str(exc))
+
+    threading.Thread(target=run, daemon=True).start()
+    return jsonify(job_id=job_id)
+
+
+def snapshot_live_db():
+    """Local, offline snapshot of the live Messages DB into the working copy.
+
+    Source = ~/Library/Messages/chat.db. If it exists AND is readable (Full Disk
+    Access granted), copy it to the working DB path the build reads (CHAT_DB,
+    default data/chat.db) using SQLite's online backup API — a transaction-
+    consistent, file-to-file LOCAL copy (no network, ever). The prior working
+    copy is backed up first (best effort).
+
+    If the live DB is absent or unreadable (no FDA), do NOTHING and return a flag
+    so the caller just rebuilds the existing working copy. NEVER raises: a failed
+    snapshot must never block the refresh.
+
+    Returns a dict: {"snapshotted": bool, "reason": str}.
+    """
+    src = LIVE_CHAT_DB
+    if not os.path.exists(src):
+        return {"snapshotted": False, "reason": "live Messages DB not found"}
+    if not os.access(src, os.R_OK):
+        return {"snapshotted": False,
+                "reason": "live Messages DB not readable (grant Full Disk Access)"}
+
+    src_conn = dest_conn = None
+    try:
+        # Back up the prior working copy first (best effort, local file copy).
+        if os.path.exists(CHAT_DB):
+            try:
+                import shutil
+                shutil.copy2(CHAT_DB, CHAT_DB + ".bak")
+            except Exception:
+                pass  # a missing backup must not stop the snapshot
+
+        os.makedirs(os.path.dirname(CHAT_DB), exist_ok=True)
+        # Read-only + immutable URI so we physically cannot touch the live DB;
+        # .backup() is a local, transaction-consistent file-to-file copy.
+        src_conn = sqlite3.connect(
+            f"file:{src}?mode=ro&immutable=1", uri=True)
+        dest_conn = sqlite3.connect(CHAT_DB)
+        src_conn.backup(dest_conn)
+        return {"snapshotted": True, "reason": "copied live DB via backup API"}
+    except Exception as exc:
+        # No FDA often surfaces here as an OperationalError; treat as graceful.
+        return {"snapshotted": False, "reason": f"snapshot skipped: {exc}"}
+    finally:
+        for c in (dest_conn, src_conn):
+            try:
+                if c is not None:
+                    c.close()
+            except Exception:
+                pass
+
+
+@app.route("/api/refresh", methods=["POST"])
+def refresh():
+    """On-demand refresh: snapshot the live Messages DB (best effort), then run
+    the incremental build. Reuses the JOBS dict + /api/job/<id> status route.
+
+    The job: snapshot -> rebuild -> read out/stats.json for last_synced. Uses
+    sys.executable (never bare python3). Fully local/offline."""
+    job_id = uuid.uuid4().hex[:8]
+    JOBS[job_id] = {"state": "running", "done": 0, "total": 0,
+                    "message": "snapshotting", "result": None}
+
+    def run():
+        try:
+            JOBS[job_id]["message"] = "snapshotting"
+            snap = snapshot_live_db()  # best effort; never raises
+            JOBS[job_id]["message"] = "rebuilding"
+            subprocess.run([sys.executable, "build.py"], cwd=HERE,
+                           check=True, capture_output=True)
+            last_synced = None
+            try:
+                stats = json.load(open(STATS_OUT, encoding="utf-8"))
+                last_synced = stats.get("last_synced")
+            except Exception:
+                pass
+            JOBS[job_id].update(
+                state="done", message="done",
+                result={"last_synced": last_synced,
+                        "snapshotted": snap.get("snapshotted"),
+                        "snapshot_reason": snap.get("reason")})
+        except subprocess.CalledProcessError as exc:
+            err = (exc.stderr or b"").decode("utf-8", "replace").strip() \
+                if isinstance(exc.stderr, (bytes, bytearray)) else str(exc)
+            JOBS[job_id].update(state="error", message=err or "build failed")
         except Exception as exc:
             JOBS[job_id].update(state="error", message=str(exc))
 

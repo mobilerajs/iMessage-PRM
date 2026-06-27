@@ -3,61 +3,57 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>iMessage Personal Relationship Manager</title>
+  <title>iMessage PRM</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <div id="app">
-    <aside id="sidebar">
-      <header id="sidebar-head">
-        <div id="title-row">
-          <h1>iMessage Personal Relationship Manager</h1>
-          <button id="overflow-btn" title="More">⋯</button>
-        </div>
-        <input id="search" type="search" placeholder="Search names — or describe a topic + Enter…" autocomplete="off" />
-        <div id="sortbar">
-          <label>Sort
-            <select id="sort">
-              <option value="recent">Newest first</option>
-              <option value="oldest">Oldest first</option>
-              <option value="name">Name (A–Z)</option>
-              <option value="most">Most contacted</option>
-              <option value="least">Least contacted</option>
-            </select>
-          </label>
-          <label id="groups-toggle" title="Group conversations aren't a category — show them in All">
-            <input type="checkbox" id="show-groups" /> Show groups
-          </label>
-          <button id="newfilter" title="Create a smart filter with the local model">+ New filter</button>
-        </div>
-        <div id="jobbar" hidden></div>
-        <div id="filterbar"></div>
-        <div id="count"></div>
-      </header>
-      <div id="bulkbar" hidden></div>
-      <ul id="list"></ul>
-    </aside>
-    <main id="thread">
-      <div id="empty">Select a conversation</div>
-      <header id="thread-head" hidden>
-        <div id="th-avatar"></div>
-        <div id="th-meta">
-          <div id="th-name"></div>
-          <div id="th-sub"></div>
-        </div>
-        <div id="th-actions">
-          <a id="msg-btn" title="Open in Messages to send a message" hidden>💬 Message</a>
-          <button id="contact-btn" title="Open this person in Contacts.app" hidden>👤 Contact</button>
-          <button id="hide-btn" title="Hide this conversation — removes them from your lists (reversible)">Hide</button>
-        </div>
-      </header>
-      <div id="th-roster" hidden></div>
-      <div id="messages"></div>
-      <div id="jump-nav" hidden>
-        <button id="jump-top" title="Jump to the oldest message">↑</button>
-        <button id="jump-bottom" title="Jump to the newest message">↓</button>
+    <header id="head">
+      <div id="head-left">
+        <h1>iMessage PRM</h1>
       </div>
-    </main>
+      <div id="counts-row">
+        <div id="counts" class="counts"></div>
+        <span id="synced" class="synced" hidden></span>
+        <button id="refresh-btn" class="refresh-btn" hidden title="Snapshot the live Messages DB and rebuild">↻ Refresh</button>
+      </div>
+      <div id="search-wrap">
+        <input id="search" type="search" autocomplete="off" spellcheck="false"
+               placeholder="Search names — or describe a topic and press Enter…" />
+        <span id="search-spin" class="spin-dot" hidden></span>
+      </div>
+      <div id="controls">
+        <div id="views" role="group" aria-label="Views">
+          <button class="view-btn" data-view="recent">Recent</button>
+          <button class="view-btn" data-view="lost">Lost touch</button>
+        </div>
+        <div id="facets"></div>
+        <label class="opt-toggle" title="Hide bare phone numbers with no name or suggestion">
+          <input type="checkbox" id="hide-unnamed" /> Hide unnamed numbers
+        </label>
+        <label class="opt-toggle" id="groups-toggle" title="Groups aren't people — include them in the table">
+          <input type="checkbox" id="show-groups" /> Show groups
+        </label>
+      </div>
+      <div id="bulkbar" hidden></div>
+      <div id="status"></div>
+    </header>
+
+    <div id="table-scroll">
+      <div id="loading" hidden><span class="spin-dot spin-lg"></span><span id="loading-text">Searching…</span></div>
+      <table id="grid">
+        <thead>
+          <tr>
+            <th class="col-name"  data-sort="name">Name</th>
+            <th class="col-cat"   data-sort="category">Category</th>
+            <th class="col-last"  data-sort="last">Last contact</th>
+            <th class="col-count" data-sort="count">Messages</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div id="empty" hidden>No matches.</div>
+    </div>
   </div>
   <script src="app.js"></script>
 </body>

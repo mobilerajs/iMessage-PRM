@@ -1483,7 +1483,11 @@ def main() -> None:
     print(f"Wrote {OUT}/people.json + {kept} conversation files.")
 
     # Small stats file the UI surfaces so it's clear what's shown vs filtered.
+    # last_synced records when this build ran (local ISO-8601), so the UI can show
+    # a "Last synced" label and the Refresh flow can report freshness.
+    import datetime as _dt_stats
     stats = {"people": n_people, "groups": n_groups, "kept": kept,
+             "last_synced": _dt_stats.datetime.now().isoformat(timespec="seconds"),
              "filtered": {"total": dropped + excluded + empty + spam + alert,
                           "junk": dropped, "feedback": excluded, "empty": empty,
                           "opt_out_spam": spam, "alerts": alert}}
