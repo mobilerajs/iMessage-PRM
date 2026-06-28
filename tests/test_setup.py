@@ -68,3 +68,16 @@ def test_setup_status_endpoint(tmp_path, monkeypatch):
     assert r.status_code == 200
     assert body["needs_setup"] is True
     assert "fda_ok" in body and "chat_db_present" in body
+
+def test_setup_from_folder_rejects_bad_folder(tmp_path):
+    s = _server()
+    client = s.app.test_client()
+    r = client.post("/api/setup/from-folder", json={"folder": str(tmp_path / "ghost")})
+    assert r.status_code == 400
+    assert "not found" in r.get_json()["error"].lower()
+
+def test_setup_from_folder_rejects_missing_chatdb(tmp_path):
+    s = _server()
+    client = s.app.test_client()
+    r = client.post("/api/setup/from-folder", json={"folder": str(tmp_path)})
+    assert r.status_code == 400 and "chat.db" in r.get_json()["error"]

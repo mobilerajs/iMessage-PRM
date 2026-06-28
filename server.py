@@ -1148,6 +1148,37 @@ def setup_from_mac():
     return jsonify(job_id=job_id)
 
 
+@app.route("/api/setup/from-folder", methods=["POST"])
+def setup_from_folder():
+    """No-FDA setup: the user copied chat.db (and optionally contacts.vcf) into an
+    unprotected folder. Validate, copy into data/, then background-build."""
+    body = request.get_json(force=True, silent=True) or {}
+    ok, info, err = validate_setup_folder(body.get("folder"))
+    if not ok:
+        return jsonify(error=err), 400
+    import shutil
+    os.makedirs(os.path.dirname(CHAT_DB), exist_ok=True)
+    try:
+        shutil.copy2(info["chat_db"], CHAT_DB)
+        if info["contacts"]:
+            shutil.copy2(info["contacts"], os.path.join(HERE, "data", "contacts.vcf"))
+    except OSError as exc:
+        return jsonify(error=f"copy failed: {exc}"), 500
+
+    job_id = uuid.uuid4().hex[:8]
+    job_set(job_id, {"state": "running", "message": "building index", "result": None})
+
+    def run():
+        ok2, err2 = _run_build()
+        if ok2:
+            JOBS[job_id].update(state="done", message="done", result={"ok": True})
+        else:
+            JOBS[job_id].update(state="error", message=err2 or "build failed")
+
+    threading.Thread(target=run, daemon=True).start()
+    return jsonify(job_id=job_id)
+
+
 @app.route("/api/setup/status")
 def setup_status():
     """First-run probe for the onboarding screen. fda_ok is a cheap read check of
