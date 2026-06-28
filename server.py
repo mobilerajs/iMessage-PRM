@@ -1115,6 +1115,39 @@ def refresh_estimate():
                    last_seconds=REFRESH_STATE.get("last_seconds"))
 
 
+@app.route("/api/setup/from-mac", methods=["POST"])
+def setup_from_mac():
+    """First-run setup from the live Messages DB on THIS Mac. Snapshot (read-only)
+    -> if blocked by Full Disk Access (and no working copy yet), stop with
+    fda_needed so the UI can guide the grant -> else sync Contacts + build."""
+    job_id = uuid.uuid4().hex[:8]
+    job_set(job_id, {"state": "running", "message": "checking access", "result": None})
+
+    def run():
+        try:
+            snap = snapshot_live_db()  # never raises
+            decision = classify_snapshot_for_setup(snap, os.path.exists(CHAT_DB))
+            if not decision["proceed"]:
+                JOBS[job_id].update(
+                    state="error",
+                    message=("fda_needed" if decision["fda_needed"] else "no_live_db"),
+                    result={"fda_needed": decision["fda_needed"], "reason": decision["reason"]})
+                return
+            JOBS[job_id]["message"] = "syncing contacts"
+            sync_contacts_live()  # best effort
+            JOBS[job_id]["message"] = "building index"
+            ok, err = _run_build()
+            if not ok:
+                JOBS[job_id].update(state="error", message=err or "build failed")
+                return
+            JOBS[job_id].update(state="done", message="done", result={"ok": True})
+        except Exception as exc:  # belt and suspenders
+            JOBS[job_id].update(state="error", message=str(exc))
+
+    threading.Thread(target=run, daemon=True).start()
+    return jsonify(job_id=job_id)
+
+
 @app.route("/api/setup/status")
 def setup_status():
     """First-run probe for the onboarding screen. fda_ok is a cheap read check of
