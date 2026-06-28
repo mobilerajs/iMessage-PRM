@@ -32,6 +32,7 @@ const LS_HIDE_UNNAMED = "imsg_crm2_hide_unnamed";
    never clobber the classic app's excluded/approved/saved/dismissed. */
 let USERSTATE = { excluded: {}, approved: {}, saved: {}, dismissed: {}, catOverride: {} };
 let CAT_OVERRIDE = {};        // alias into USERSTATE.catOverride
+let DISMISSED = {};           // alias into USERSTATE.dismissed (people hidden by hand)
 let FILTERS = [];             // out/filters.json (list)
 let CATEGORY_KEY_MAP = {};    // personKey -> user-category name (type:"category")
 
@@ -124,8 +125,75 @@ function renderCounts() {
   const parts = [`${people.toLocaleString()} people`,
     `${groups.toLocaleString()} groups ${state.showGroups ? "shown" : "hidden"}`];
   const f = state.stats && state.stats.filtered;
-  if (f && typeof f.total === "number") parts.push(`${f.total.toLocaleString()} filtered out`);
-  countsEl.textContent = parts.join(" · ");
+  const dz = dismissedCount();
+  const total = ((f && typeof f.total === "number") ? f.total : 0) + dz;
+  // The filtered count is a button — click to see why things aren't shown + restore.
+  let html = parts.map(escapeHtml).join(" · ");
+  if (total > 0) {
+    html += ` · <button id="filtered-link" class="filtered-link" title="What's not shown, and why">` +
+      `${total.toLocaleString()} filtered out</button>`;
+  }
+  countsEl.innerHTML = html;
+  const link = $("#filtered-link");
+  if (link) link.onclick = openFilteredModal;
+}
+
+// Modal: explain why conversations aren't shown (build-time buckets) + the people
+// you dismissed by hand (with Restore). Data is already in hand (stats.filtered +
+// userstate.dismissed) — no backend call.
+const FILTER_BUCKETS = [
+  ["junk", "Junk & spam", "shortcodes, bots, marketing"],
+  ["opt_out_spam", "Marketing & opt-out", "“reply STOP” style senders"],
+  ["alerts", "Alerts & one-time codes", "2FA / OTP / notifications"],
+  ["empty", "Empty threads", "no real message content"],
+  ["feedback", "Filter feedback", "you marked these as not-people"],
+];
+function openFilteredModal() {
+  closeFilteredModal();
+  const f = (state.stats && state.stats.filtered) || {};
+  const have = new Set(state.all.map((p) => p.key));
+  const byKey = new Map(state.all.map((p) => [p.key, p]));
+  const dismissedKeys = Object.keys(DISMISSED).filter((k) => have.has(k));
+
+  const autoRows = FILTER_BUCKETS
+    .filter(([k]) => (f[k] || 0) > 0)
+    .map(([k, label, why]) =>
+      `<div class="fb-row"><div class="fb-main"><span class="fb-label">${label}</span>` +
+      `<span class="fb-why">${why}</span></div><span class="fb-count">${(f[k] || 0).toLocaleString()}</span></div>`
+    ).join("");
+
+  const dismissedList = dismissedKeys.map((k) => {
+    const p = byKey.get(k);
+    const nm = escapeHtml((p && (p.name || p.raw_id)) || k);
+    return `<div class="fb-person"><span class="fb-pname">${nm}</span>` +
+      `<button class="fb-restore" data-restore="${escapeHtml(k)}">Restore</button></div>`;
+  }).join("");
+  const dismissedSection = dismissedKeys.length
+    ? `<div class="fb-sec">Dismissed by you <span class="fb-count">${dismissedKeys.length}</span></div>` +
+      `<div class="fb-people">${dismissedList}</div>`
+    : `<div class="fb-empty">You haven't dismissed anyone yet — hover a row and click × to hide someone.</div>`;
+
+  const back = document.createElement("div");
+  back.className = "modal-backdrop";
+  back.id = "filtered-modal";
+  back.innerHTML =
+    `<div class="modal-card fb-card" role="dialog" aria-modal="true" aria-label="Filtered out">` +
+    `<h2 class="modal-title">What's not shown</h2>` +
+    `<div class="modal-body">Conversations the build filtered automatically, plus people you dismissed.</div>` +
+    (autoRows || `<div class="fb-empty">Nothing was auto-filtered.</div>`) +
+    `<div class="po-sep"></div>` + dismissedSection +
+    `<div class="modal-actions"><button class="modal-btn modal-cancel" id="fb-close">Close</button></div>` +
+    `</div>`;
+  document.body.appendChild(back);
+  back.addEventListener("click", (e) => {
+    if (e.target === back || e.target.closest("#fb-close")) { closeFilteredModal(); return; }
+    const r = e.target.closest("[data-restore]");
+    if (r) { restorePerson(r.dataset.restore); openFilteredModal(); }  // refresh the list
+  });
+}
+function closeFilteredModal() {
+  const m = $("#filtered-modal");
+  if (m) m.remove();
 }
 
 /* Friendly "Last synced" label: "just now", "5m ago", "3h ago", "2d ago", or a
@@ -246,6 +314,7 @@ async function loadSharedState() {
     };
   } catch (e) { /* leave defaults */ }
   CAT_OVERRIDE = USERSTATE.catOverride;
+  DISMISSED = USERSTATE.dismissed;
 
   // Filters: user-category memberships + chip colors/labels.
   try {
@@ -264,7 +333,7 @@ async function persistState() {
     excluded: (server && server.excluded) || USERSTATE.excluded || {},
     approved: (server && server.approved) || USERSTATE.approved || {},
     saved: (server && server.saved) || USERSTATE.saved || {},
-    dismissed: (server && server.dismissed) || USERSTATE.dismissed || {},
+    dismissed: DISMISSED,      // our authoritative copy for this field
     catOverride: CAT_OVERRIDE, // our authoritative copy for this field
   };
   USERSTATE = merged;
@@ -396,6 +465,10 @@ function setView(v) {
 function currentRows() {
   let rows = state.all.slice();
 
+  // People you dismissed by hand are hidden everywhere (reversible from the
+  // "filtered out" modal).
+  rows = rows.filter((p) => !DISMISSED[p.key]);
+
   // Groups hidden unless explicitly shown.
   if (!state.showGroups) rows = rows.filter((p) => p.kind !== "group");
 
@@ -507,7 +580,9 @@ function renderHeader() {
       matchTh = document.createElement("th");
       matchTh.className = "col-match";
       matchTh.textContent = "Match";
-      headRow.appendChild(matchTh); // last column
+      // Insert before the trailing dismiss (×) column so col-x stays last and
+      // header columns line up with the row cells.
+      headRow.insertBefore(matchTh, theadEl.querySelector("th.col-x"));
     }
   } else if (matchTh) {
     matchTh.remove();
@@ -584,12 +659,19 @@ function rowHtml(p) {
     }
   }
 
+  // Hover-revealed dismiss (×) for people — a reversible hide. Lives in its own
+  // trailing column so it reads as a standalone control and never crowds the count.
+  const xCell = isPerson
+    ? `<td class="col-x"><button class="row-x" data-dismiss="${escapeHtml(p.key)}" title="Dismiss — hide this person" aria-label="Dismiss">×</button></td>`
+    : `<td class="col-x"></td>`;
+
   return `<tr class="${cls}"${dataKey}${dataOpen}${title}>` +
     `<td class="col-name">${nameCell}</td>` +
     `<td class="col-cat">${pill}</td>` +
     `<td class="col-last">${escapeHtml(relTime(p.last_active || p.last_date))}</td>` +
     `<td class="col-count">${p.count || 0}</td>` +
     matchCell +
+    xCell +
     `</tr>`;
 }
 
@@ -601,6 +683,50 @@ async function assignCategory(keys, category) {
   for (const k of keys) CAT_OVERRIDE[k] = category;
   await persistState();   // one full-object round-trip for the whole batch
   render();
+}
+
+/* --- Dismiss / restore (reversible hide) --- */
+async function dismissPeople(keys) {
+  if (!keys.length) return;
+  const byKey = new Map(state.all.map((p) => [p.key, p]));
+  const one = keys.length === 1 && byKey.get(keys[0]);
+  for (const k of keys) { DISMISSED[k] = true; state.selected.delete(k); }
+  await persistState();
+  render();
+  renderCounts();   // keep the "N filtered out" affordance in sync (render() doesn't)
+  const label = one
+    ? `Dismissed ${one.name || one.raw_id || "contact"}`
+    : `Dismissed ${keys.length} people`;
+  showUndoToast(label, keys);
+}
+async function restorePeople(keys) {
+  for (const k of keys) delete DISMISSED[k];
+  await persistState();
+  render();
+  renderCounts();   // keep the "N filtered out" affordance in sync (render() doesn't)
+}
+async function restorePerson(key) { await restorePeople([key]); }
+
+let _toastTimer = null;
+function showUndoToast(label, keys) {
+  let t = $("#toast");
+  if (!t) { t = document.createElement("div"); t.id = "toast"; document.body.appendChild(t); }
+  t.innerHTML = `<span class="toast-msg"></span><button class="toast-undo">Undo</button>`;
+  t.querySelector(".toast-msg").textContent = label;   // textContent = no HTML injection
+  t.querySelector(".toast-undo").onclick = () => { hideToast(); restorePeople(keys); };
+  t.classList.add("show");
+  if (_toastTimer) clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(hideToast, 6000);
+}
+function hideToast() {
+  const t = $("#toast");
+  if (t) t.classList.remove("show");
+  if (_toastTimer) { clearTimeout(_toastTimer); _toastTimer = null; }
+}
+function dismissedCount() {
+  // Only count keys that still exist in the loaded set.
+  const have = new Set(state.all.map((p) => p.key));
+  return Object.keys(DISMISSED).filter((k) => have.has(k)).length;
 }
 
 // Prompt for a brand-new category value (no model run — pure override label).
@@ -693,6 +819,7 @@ function renderBulkBar() {
     `<span class="bulk-n">${state.selected.size} selected</span>` +
     `<span class="bulk-sep">·</span><span class="bulk-label">Move to:</span>${targets}` +
     `<button class="bulk-new">+ New category…</button>` +
+    `<span class="bulk-sep">·</span><button class="bulk-dismiss">Dismiss</button>` +
     `<span class="bulk-sep">·</span><button class="bulk-clear">Clear</button>`;
 }
 
@@ -1165,6 +1292,13 @@ theadEl.addEventListener("keydown", (e) => {
 // (c) row open-in-Messages. The checkbox and pill stopPropagation so they never
 // trigger the row's Messages open.
 rowsEl.addEventListener("click", (e) => {
+  // (a0) dismiss (×) -> reversible hide; never opens Messages
+  const x = e.target.closest("[data-dismiss]");
+  if (x) {
+    e.stopPropagation();
+    dismissPeople([x.dataset.dismiss]);
+    return;
+  }
   // (a) selection checkbox
   const cb = e.target.closest(".rowcheck input");
   if (cb) {
@@ -1212,6 +1346,11 @@ rowsEl.addEventListener("click", (e) => {
 // Bulk bar actions.
 bulkbarEl.addEventListener("click", async (e) => {
   if (e.target.closest(".bulk-clear")) { clearSelection(); render(); return; }
+  if (e.target.closest(".bulk-dismiss")) {
+    const keys = [...state.selected];
+    await dismissPeople(keys);  // also clears them from the selection
+    return;
+  }
   if (e.target.closest(".bulk-new")) {
     const cat = promptNewCategory();
     if (!cat) return;
@@ -1230,7 +1369,7 @@ bulkbarEl.addEventListener("click", async (e) => {
 document.addEventListener("click", (e) => {
   if (popoverEl && !popoverEl.contains(e.target)) closePopover();
 });
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") closePopover(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closePopover(); closeFilteredModal(); } });
 $("#table-scroll").addEventListener("scroll", closePopover);
 
 /* ---------------- Go ---------------- */

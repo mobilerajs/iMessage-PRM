@@ -202,7 +202,7 @@ body {
 #grid thead th:hover { color: var(--text); }
 #grid thead th .arrow { color: var(--blue); margin-left: 4px; }
 .col-count, td.col-count { text-align: right; }
-.col-name { width: 380px; }
+.col-name { width: 340px; }
 .col-last { width: 110px; }
 .col-cat { width: 130px; }
 .col-count { width: 100px; }
@@ -312,6 +312,53 @@ td.col-count { color: var(--text); font-variant-numeric: tabular-nums; font-weig
 .po-new { color: var(--blue); }
 .po-new:hover { color: #fff; }
 .po-sep { height: 1px; background: var(--line); margin: 5px 4px; }
+
+/* ---- Dismiss (×) column + the "filtered out" modal ---- */
+.col-x { width: 40px; }
+td.col-x { text-align: center; }
+.row-x {
+  width: 22px; height: 22px; line-height: 20px; text-align: center;
+  border: none; border-radius: 50%; background: transparent; color: var(--muted);
+  font-size: 16px; cursor: pointer; opacity: 0; transition: opacity .1s, background .1s;
+}
+tr.person:hover .row-x { opacity: 0.6; }
+.row-x:hover { opacity: 1; background: var(--surface-sunken); color: var(--text); }
+/* Undo toast after a dismiss. */
+#toast {
+  position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(8px);
+  z-index: 500; display: flex; align-items: center; gap: 14px;
+  background: #1f2430; color: #fff; padding: 10px 14px; border-radius: var(--radius-md);
+  box-shadow: var(--shadow-pop); font-size: 13px; opacity: 0; pointer-events: none;
+  transition: opacity .14s, transform .14s;
+}
+#toast.show { opacity: 1; transform: translateX(-50%) translateY(0); pointer-events: auto; }
+.toast-undo {
+  border: none; background: none; color: #6cb6ff; font: inherit; font-weight: 600;
+  cursor: pointer; padding: 2px 4px;
+}
+.toast-undo:hover { color: #9ccdff; }
+.filtered-link {
+  border: none; background: none; padding: 0; font: inherit; color: var(--muted);
+  cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
+}
+.filtered-link:hover { color: var(--blue); }
+.fb-card { max-width: 460px; }
+.fb-row { display: flex; align-items: baseline; justify-content: space-between; padding: 7px 2px; }
+.fb-main { display: flex; flex-direction: column; gap: 1px; }
+.fb-label { font-size: 14px; color: var(--text); font-weight: 500; }
+.fb-why { font-size: 12px; color: var(--muted); }
+.fb-count { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.fb-sec { display: flex; justify-content: space-between; font-size: 12px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 4px 2px 6px; }
+.fb-people { max-height: 200px; overflow-y: auto; }
+.fb-person { display: flex; align-items: center; justify-content: space-between; padding: 5px 2px; }
+.fb-pname { font-size: 14px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fb-restore {
+  border: 1px solid var(--line); background: var(--surface); color: var(--blue);
+  font-size: 12px; padding: 3px 10px; border-radius: var(--radius-sm); cursor: pointer; flex: 0 0 auto;
+}
+.fb-restore:hover { background: var(--blue-wash); border-color: var(--blue-wash-line); }
+.fb-empty { font-size: 13px; color: var(--muted); padding: 6px 2px; }
 
 /* ---------------- Spinner ---------------- */
 .spin-dot {
