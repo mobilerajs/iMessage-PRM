@@ -6,8 +6,9 @@ talk to — junk, bots, OTP codes, and marketing removed — so you can find som
 see who you've lost touch with, and keep light relationship context. All intelligence
 (categorization, search) runs **on-device** via a local model. Nothing is uploaded.
 
-> **Status: baseline / first-pass.** This was built as a **homework assignment for a
-> Maven class**, in a **few hours**. It works end-to-end, but it's deliberately just a
+> **Status: baseline / first-pass.** This was built as a **self-directed learning
+> project**, in connection with an online learning course rather than a formal class, in
+> a **few hours**. It works end-to-end, but it's deliberately just a
 > baseline — there are **numerous enhancements, scaffolding, and hardening still to do**
 > (real evals, broader test coverage, packaging/installer, live-database access, email
 > enrichment, UI rework, error handling). See **[What's not done yet](#whats-not-done-yet)**
