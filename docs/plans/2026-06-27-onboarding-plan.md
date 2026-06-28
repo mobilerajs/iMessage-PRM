@@ -9,7 +9,7 @@
 **Tech Stack:** Python 3.14 (arm64 venv), Flask (use `app.test_client()` for endpoint tests), SQLite backup API, vanilla JS, pytest.
 
 **Conventions (every task):**
-- Run from project root `~/Dev/iMessage CRM/`. Python = `.venv/bin/python`; tests = `.venv/bin/python -m pytest -q`; JS = `node --check app.js`.
+- Run from the repo root (the `iMessage CRM/` checkout). Python = `.venv/bin/python`; tests = `.venv/bin/python -m pytest -q`; JS = `node --check app.js`.
 - Commit footer: `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
 - PUBLIC repo: no real names/phones/secrets in code or tests; tests use tmp dirs + synthetic files.
 - Baseline: **106 tests passing.**

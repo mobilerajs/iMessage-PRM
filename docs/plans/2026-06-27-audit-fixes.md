@@ -9,7 +9,7 @@
 **Tech Stack:** Python 3.14 (arm64 venv), Flask, MLX (Qwen3-4B + bge-small), SQLite/FTS5 (stdlib), NumPy, vanilla JS, pytest.
 
 **Conventions for every task below:**
-- Run from the project root: `~/Dev/iMessage CRM/` (NOT the worktree).
+- Run from the repo root (the `iMessage CRM/` checkout), NOT a worktree.
 - Python is the venv: `.venv/bin/python`, tests `.venv/bin/python -m pytest -q`.
 - JS sanity: `node --check app.js`.
 - **Public repo — privacy gate before every commit:** `git ls-files | xargs grep -niE '<real phone/name patterns>'` returns nothing new; `data/`, `out/`, `config.json`, and `tests/eval/queries.jsonl` stay gitignored.
