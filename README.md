@@ -35,17 +35,22 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 # 2. Configure: copy the example and set your name
 cp config.example.json config.json   # then edit "user_name"
 
-# 3. Put two source files in ./data (see Setup below):
-#    data/chat.db        a copy of ~/Library/Messages/chat.db
-#    data/contacts.vcf   Contacts.app → Export vCard
-
-# 4. Build the dataset + serve (first run downloads models — see below)
+# 3. Start it (first run downloads models — see below)
 ./start.sh            # http://localhost:8001
-./start.sh --rebuild  # force a fresh rebuild first
 ```
 
-Setting `user_name` in `config.json` is used to anchor family detection and to
-avoid suggesting your own name back to you.
+On first run the app opens a **Setup screen** in the browser — no manual file
+copying. Pick one:
+
+- **Set up from this Mac** (one click) — snapshots your live Messages DB
+  (read-only) and syncs Contacts, then builds. macOS will require **Full Disk
+  Access**; the screen walks you through granting it and a **Try again** button.
+- **Point at a folder** (no Full Disk Access) — if you'd rather not grant FDA,
+  copy `chat.db` (and optionally `contacts.vcf`) into a folder like your Desktop in
+  Finder, then give the app that folder. See [Setup](#setup) for how to export them.
+
+Setting `user_name` in `config.json` anchors family detection and avoids suggesting
+your own name back to you. The **Refresh** button keeps the index current afterwards.
 
 ### First-run model download
 
@@ -55,17 +60,27 @@ Qwen3-4B classifier (~2.5 GB) and the bge-small embedding model. This happens
 are cached locally and nothing leaves your machine. See
 [`docs/SETUP-QUESTIONS.md`](docs/SETUP-QUESTIONS.md) for more.
 
-### Setup (the two source files)
+### Setup
 
-- **`data/chat.db`** — a copy of `~/Library/Messages/chat.db`. **Fully quit Messages
-  (⌘Q) before copying** so it flushes pending writes — the DB is opened `immutable=1`,
-  which ignores any separate `-wal` file, so the copied `chat.db` must already contain
-  your latest messages.
-- **`data/contacts.vcf`** — Contacts.app → ⌘A → File → Export → Export vCard… (names + photos).
+The **Setup screen** (above) is the easy path. **"Set up from this Mac"** needs Full
+Disk Access for your terminal — a one-time grant in **System Settings → Privacy &
+Security → Full Disk Access** (this is an OS requirement for reading
+`~/Library/Messages/`; there's no way around it). The app reads the DB strictly
+read-only and never modifies it.
 
-The database is **always opened read-only + immutable** — the app physically cannot
-write to it (see [Safety](#safety--privacy)). Today we point at a *copy* for testing;
-pointing at the live database is one env var away (see below) and is a roadmap item.
+If you use the **"Point at a folder"** path (no FDA), produce the two files first:
+
+- **`chat.db`** — copy `~/Library/Messages/chat.db` in **Finder** (a user-initiated
+  copy needs no FDA). **Fully quit Messages (⌘Q) before copying** so it flushes
+  pending writes — the DB is opened `immutable=1`, which ignores any separate `-wal`
+  file, so the copied `chat.db` must already contain your latest messages.
+- **`contacts.vcf`** (optional) — Contacts.app → ⌘A → File → Export → Export vCard…
+  (names + photos).
+
+Put both in a folder (e.g. your Desktop) and point the Setup screen at it. The
+database is **always opened read-only + immutable** — the app physically cannot write
+to it (see [Safety](#safety--privacy)). You can also pre-place files in `./data` and
+set paths via env vars (see [below](#pointing-at-the-live-database)) for a scripted setup.
 
 ---
 
