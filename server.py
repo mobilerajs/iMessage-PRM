@@ -1115,6 +1115,16 @@ def refresh_estimate():
                    last_seconds=REFRESH_STATE.get("last_seconds"))
 
 
+@app.route("/api/setup/status")
+def setup_status():
+    """First-run probe for the onboarding screen. fda_ok is a cheap read check of
+    the live DB (False usually means Full Disk Access isn't granted)."""
+    fda_ok = os.path.exists(LIVE_CHAT_DB) and os.access(LIVE_CHAT_DB, os.R_OK)
+    return jsonify(needs_setup=needs_setup(),
+                   fda_ok=bool(fda_ok),
+                   chat_db_present=os.path.exists(CHAT_DB))
+
+
 @app.route("/api/job/<job_id>")
 def job_status(job_id):
     j = job_get(job_id)

@@ -58,3 +58,13 @@ def test_validate_folder_no_chatdb(tmp_path):
     s = _server()
     ok, info, err = s.validate_setup_folder(str(tmp_path))
     assert ok is False and "chat.db" in err
+
+def test_setup_status_endpoint(tmp_path, monkeypatch):
+    s = _server()
+    monkeypatch.setattr(s, "PEOPLE_OUT", str(tmp_path / "nope.json"))
+    client = s.app.test_client()
+    r = client.get("/api/setup/status")
+    body = r.get_json()
+    assert r.status_code == 200
+    assert body["needs_setup"] is True
+    assert "fda_ok" in body and "chat_db_present" in body
