@@ -30,6 +30,7 @@ LIVE_CHAT_DB = os.path.expanduser("~/Library/Messages/chat.db")
 CONTACTS_VCF = os.path.expanduser(
     os.environ.get("CONTACTS_VCF", os.path.join(HERE, "data", "contacts.vcf")))
 STATS_OUT = os.path.join(HERE, "out", "stats.json")
+PEOPLE_OUT = os.path.join(HERE, "out", "people.json")
 FILTERS_DATA = os.path.join(HERE, "data/filters.json")
 FILTERS_OUT = os.path.join(HERE, "out/filters.json")
 USERSTATE = os.path.join(HERE, "data/userstate.json")
@@ -185,6 +186,44 @@ def _run_build():
         err = (r.stderr or r.stdout or "").strip()[-2000:]
         return False, err or f"build.py exited with code {r.returncode}"
     return True, ""
+
+
+def needs_setup():
+    """True on first run: the built index doesn't exist yet."""
+    return not os.path.exists(PEOPLE_OUT)
+
+
+def classify_snapshot_for_setup(snap, chat_db_exists):
+    """Decide what the from-mac setup job should do, given a snapshot_live_db()
+    result and whether a working copy already exists. Pure (no I/O).
+      - snapshotted -> proceed.
+      - not snapshotted but a working copy exists -> proceed (build that copy).
+      - not snapshotted and no copy -> blocked; fda_needed when the reason looks
+        like a permission/readability problem (vs the live DB simply not existing,
+        in which case the user should use the folder path)."""
+    if snap.get("snapshotted"):
+        return {"proceed": True, "fda_needed": False, "reason": snap.get("reason", "")}
+    if chat_db_exists:
+        return {"proceed": True, "fda_needed": False, "reason": snap.get("reason", "")}
+    reason = (snap.get("reason") or "").lower()
+    fda = ("full disk access" in reason or "readable" in reason
+           or "not permitted" in reason or "unable to open" in reason)
+    return {"proceed": False, "fda_needed": fda, "reason": snap.get("reason", "")}
+
+
+def validate_setup_folder(folder):
+    """Validate a user-provided folder for the no-FDA setup path. Returns
+    (ok, info|None, error). info = {chat_db, contacts|None}."""
+    if not folder or not str(folder).strip():
+        return False, None, "no folder given"
+    path = os.path.abspath(os.path.expanduser(str(folder).strip()))
+    if not os.path.isdir(path):
+        return False, None, "folder not found"
+    chat = os.path.join(path, "chat.db")
+    if not os.path.isfile(chat):
+        return False, None, "no chat.db in that folder"
+    contacts = os.path.join(path, "contacts.vcf")
+    return True, {"chat_db": chat, "contacts": contacts if os.path.isfile(contacts) else None}, ""
 
 
 # Duration (seconds) of the most recent successful /api/refresh, so the pre-
