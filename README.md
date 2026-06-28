@@ -120,6 +120,18 @@ Create a category by describing it ("friends of my son", "doctors and dentists")
 description is **routed** to the right evaluation tier (a structural rule vs. the model
 reading conversations) — identity/topic descriptions correctly go semantic instead of
 becoming a broad keyword match — and matching people are assigned to it **exclusively**.
+These also **get sharper over time**: every time you reclassify someone by hand, the
+override persists (in `userstate`) and survives rebuilds, so your corrections accumulate.
+
+> **Opinionated defaults — and how to make them yours.** The four built-ins
+> (**Family / Work / Personal / Contractors**) reflect the author's needs and have
+> hand-tuned auto-classification. They aren't meant to be universal — if you fork this,
+> add your own categories with the feature above (this install also runs **Kids Stuff**
+> and **Medical**, created exactly that way). To change the *built-in* set at the code
+> level: the partition lives in `assign_category()` (build.py); Family's kinship anchors
+> are `KIN_TERMS` (build.py); the Contractors/Work seed lists are
+> `data/enrich_parts/filter_contractors.json` and `filter_work.json`. (Adding categories
+> through the app needs no code change — that's the recommended path.)
 
 ### Fast hybrid search (keyword + semantic)
 Type a name to filter the table live; press **Enter** to search message **content**.
@@ -140,6 +152,18 @@ The two ranked lists are combined with **Reciprocal Rank Fusion**, then the loca
 bit of thread that matched. ~2.5 s warm for the fused path; quoted/literal queries return
 in milliseconds. (Embedding the full content — not a short digest sample — plus the
 keyword index is what makes both in-passing topics and exact strings findable.)
+
+**What you can type:**
+
+| You type | What happens | Examples |
+|----------|--------------|----------|
+| A **name** | Live-filters the table as you type (name prefix) | `sarah`, `dr` |
+| A **topic**, then **Enter** | Searches message *content* (keyword + semantic fused) | `lunch spots in palo alto` · `people I talked about pizza with` · `who recommended a plumber` · `ski trip` |
+| An **exact phrase** in `"quotes"`, then Enter | Literal match, instant (no model) | `"happy birthday"` · `"the wifi password is"` · an address or order number |
+
+Plus the **Recent** (default) and **Lost touch** views — the latter surfaces people
+you've gone quiet with (and is group-activity-aware, so someone you still chat with in
+a group thread isn't wrongly flagged).
 
 ### Relationship tooling
 - **Name inference → Contacts** — suggests full names for bare numbers and writes them
