@@ -99,10 +99,11 @@ Every person lands in **exactly one** category — no duplicates across chips:
 - **Family · Personal · Work · Contractors** (the built-in partition), plus any
   **user-added categories** you create (e.g. "Kids' Friends", "Medical").
 - Assignment is by priority: `Contractors → Family → Work → Personal`, with user
-  categories layered on top. You can **reclassify** anyone (right-click → Move to, or
-  multi-select → bulk move); your corrections persist and survive rebuilds.
+  categories layered on top. You can **reclassify** anyone (click their category pill →
+  **Move to…**, or multi-select → bulk move); your corrections persist and survive rebuilds.
 - **Groups** aren't a category — they're a show/hide toggle. **Junk** isn't a chip —
-  hidden conversations are removed from view (reversible via ⋯ → Hidden).
+  spam, bots, and one-time codes are filtered out by the build; click the **"N filtered
+  out"** count to see the breakdown by bucket (and restore anyone you dismissed).
 
 ### On-device classification
 - **Family** — a kinship-group heuristic (members of "Mom/Dad"-anchored group chats)
@@ -169,8 +170,11 @@ a group thread isn't wrongly flagged).
 - **Name inference → Contacts** — suggests full names for bare numbers and writes them
   back to Contacts.app (additive merge; never destructive).
 - **Birthdays** — inferred from conversation and shown/sortable.
-- **Multi-select** — checkboxes (reveal on hover) → bulk **move** to a category or
-  **hide**.
+- **Multi-select** — row checkboxes → bulk **move** to a category or **dismiss**.
+- **Dismiss / restore** — hover a row and click **×** to hide someone you don't care
+  about (reversible; an **Undo** toast appears, and they're listed under "Dismissed by
+  you" in the filtered-out modal with a **Restore** button). Stored in `userstate`, so
+  it survives rebuilds.
 - **Sort** — Newest / Oldest (your "who have I gone quiet with" view) / Most / Least
   contacted / Name (A–Z).
 - **Open in Messages / Contacts**, jump-to-top/bottom in long threads.
