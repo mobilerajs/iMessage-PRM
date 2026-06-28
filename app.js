@@ -612,7 +612,11 @@ function promptNewCategory() {
 /* --- Inline (Airtable-style) pill popover --- */
 let popoverEl = null;
 function closePopover() {
-  if (popoverEl) { popoverEl.remove(); popoverEl = null; }
+  if (popoverEl) {
+    if (popoverEl._scrim) popoverEl._scrim.remove();
+    popoverEl.remove();
+    popoverEl = null;
+  }
 }
 function openCategoryPopover(anchor, key) {
   closePopover();
@@ -622,9 +626,18 @@ function openCategoryPopover(anchor, key) {
     `<div class="po-item${t.category === cur ? " cur" : ""}" data-cat="${escapeHtml(t.category)}">` +
     `<span class="po-dot" style="background:${t.color}"></span>${escapeHtml(t.label)}</div>`
   ).join("");
+  // Scrim behind the menu so a misclick on the look-alike filter-facet bar just
+  // closes the menu instead of filtering the table.
+  const scrim = document.createElement("div");
+  scrim.className = "po-scrim";
+  scrim.addEventListener("click", closePopover);
+  document.body.appendChild(scrim);
+
   popoverEl = document.createElement("div");
   popoverEl.className = "popover";
-  popoverEl.innerHTML = items +
+  popoverEl._scrim = scrim;
+  popoverEl.innerHTML =
+    `<div class="po-head">Move to…</div>` + items +
     `<div class="po-sep"></div><div class="po-item po-new">+ New category…</div>`;
   document.body.appendChild(popoverEl);
 
@@ -636,12 +649,25 @@ function openCategoryPopover(anchor, key) {
   if (left + pw > window.innerWidth - m) left = window.innerWidth - pw - m;
   if (left < m) left = m;
   let top = r.bottom + 4;
+  let below = true;
   if (top + ph > window.innerHeight - m) {
     const above = r.top - ph - 4;
-    top = above >= m ? above : Math.max(m, window.innerHeight - ph - m);
+    if (above >= m) { top = above; below = false; }
+    else { top = Math.max(m, window.innerHeight - ph - m); }
   }
   popoverEl.style.top = (window.scrollY + top) + "px";
   popoverEl.style.left = (window.scrollX + left) + "px";
+
+  // Caret tethering the menu to the pill (only when it sits below it), so it
+  // reads as "this contact's menu", not the global filter bar. Clamped to stay
+  // within the popover's rounded corners.
+  if (below) {
+    const caret = document.createElement("div");
+    caret.className = "po-caret";
+    const cx = (r.left + r.width / 2) - left;             // pill center within popover
+    caret.style.left = Math.max(10, Math.min(pw - 16, cx - 6)) + "px";
+    popoverEl.appendChild(caret);
+  }
 
   popoverEl.addEventListener("click", async (e) => {
     const item = e.target.closest(".po-item");
