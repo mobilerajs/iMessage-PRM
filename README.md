@@ -285,27 +285,30 @@ This is a first pass; these are known, deliberate gaps:
 
 ---
 
-## Pointing at the live database
+## Using live data (and a note on paths)
 
-Any setting can be overridden by an env var (e.g. `CHAT_DB`), which beats
-`config.json`, which beats the built-in default. Source paths default to `./data`
-but aren't hardcoded — override via env vars:
+The way to pull in your live Messages is the **Setup screen** / **Refresh** button:
+they read `~/Library/Messages/chat.db` strictly **read-only** (SQLite backup API) and
+write a *working copy* to `data/chat.db` — your real Messages database is never
+modified. That needs **Full Disk Access** for your terminal (System Settings → Privacy
+& Security).
 
-```bash
-CHAT_DB=~/Library/Messages/chat.db \
-CONTACTS_VCF=~/Downloads/contacts.vcf \
-./start.sh --rebuild
-```
+> ⚠️ **Do not point `CHAT_DB` at `~/Library/Messages/chat.db`.** `CHAT_DB` is the
+> *working copy* — the build reads it, and snapshot/refresh **write** to it. Setting it
+> to the live database would mean writing to your real Messages DB, so the app now
+> **refuses** any `CHAT_DB` under `~/Library/Messages`. Use it only to relocate the
+> working copy elsewhere.
+
+Any setting can be overridden by an env var (which beats `config.json`, which beats the
+default):
 
 | Env var | Default | Meaning |
 |---------|---------|---------|
-| `CHAT_DB` | `data/chat.db` | Source Messages database (always opened read-only) |
+| `CHAT_DB` | `data/chat.db` | **Working copy** of the Messages DB (build reads it; snapshot writes it). Must not be the live DB. |
 | `CONTACTS_VCF` | `data/contacts.vcf` | Exported vCard |
 | `EXCLUDE_FILE` | `data/exclude.json` | Persistent junk-filter feedback |
 
-Reading the live DB needs **Full Disk Access** for your terminal (System Settings →
-Privacy & Security). `CRM_SKIP_EMBED=1` skips rebuilding the search index for faster
-iteration.
+`CRM_SKIP_EMBED=1` skips rebuilding the search index for faster iteration.
 
 ---
 

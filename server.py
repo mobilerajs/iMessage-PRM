@@ -169,8 +169,11 @@ def job_set(job_id, value):
 
 
 def job_get(job_id):
+    # Return a shallow copy so a reader (e.g. /api/job/<id>) gets a consistent
+    # snapshot even while a worker thread mutates the live job dict.
     with _JOBS_LOCK:
-        return JOBS.get(job_id)
+        j = JOBS.get(job_id)
+        return dict(j) if j is not None else None
 
 
 def _run_build():
@@ -222,8 +225,46 @@ def validate_setup_folder(folder):
     chat = os.path.join(path, "chat.db")
     if not os.path.isfile(chat):
         return False, None, "no chat.db in that folder"
+    if os.path.islink(chat):
+        return False, None, "chat.db is a symlink — point at a real copied file"
+    if not looks_like_sqlite(chat):
+        return False, None, "that chat.db is not a valid SQLite database"
     contacts = os.path.join(path, "contacts.vcf")
     return True, {"chat_db": chat, "contacts": contacts if os.path.isfile(contacts) else None}, ""
+
+
+def looks_like_sqlite(path):
+    """True if `path` starts with the SQLite file magic. A cheap sanity check so
+    setup won't copy a bogus file in as the working DB."""
+    try:
+        with open(path, "rb") as f:
+            return f.read(16) == b"SQLite format 3\x00"
+    except OSError:
+        return False
+
+
+def is_safe_working_db(path):
+    """True if `path` is an acceptable destination to WRITE the working DB copy.
+    The build reads chat.db read-only, but snapshot_live_db()/setup WRITE to this
+    path — so it must NEVER be the live Messages DB or anything under
+    ~/Library/Messages. Guards the app's core 'never write your Messages' promise."""
+    try:
+        rp = os.path.realpath(os.path.expanduser(path))
+    except Exception:
+        return False
+    live_dir = os.path.realpath(os.path.expanduser("~/Library/Messages"))
+    live_db = os.path.realpath(os.path.expanduser(LIVE_CHAT_DB))
+    return not (rp == live_db or rp == live_dir or rp.startswith(live_dir + os.sep))
+
+
+def valid_birthday(month, day):
+    """True if month/day form a plausible year-less birthday. Validated BEFORE any
+    Contacts mutation so a bad date can't 500 mid-write."""
+    try:
+        m, d = int(month), int(day)
+    except (TypeError, ValueError):
+        return False
+    return 1 <= m <= 12 and 1 <= d <= 31
 
 
 # Duration (seconds) of the most recent successful /api/refresh, so the pre-
@@ -909,6 +950,11 @@ def contacts_update():
     contact_id = (body.get("contact_id") or "").strip()
     if not name or not handle:
         return jsonify(error="name and raw_id required"), 400
+    # Validate the birthday BEFORE building/running any AppleScript, so an invalid
+    # date can't fail mid-script after a phone/email has already been added.
+    if bday and (bday.get("month") or bday.get("day")):
+        if not valid_birthday(bday.get("month"), bday.get("day")):
+            return jsonify(error="invalid birthday"), 400
     parts = name.split()
     first, last = parts[0], " ".join(parts[1:])
     is_email = "@" in handle
@@ -989,6 +1035,12 @@ def snapshot_live_db():
     Returns a dict: {"snapshotted": bool, "reason": str}.
     """
     src = LIVE_CHAT_DB
+    if not is_safe_working_db(CHAT_DB):
+        # Refuse to ever write onto the live Messages DB (e.g. a misconfigured
+        # CHAT_DB pointing at ~/Library/Messages). The build reads read-only, but
+        # this is a WRITE destination — it must never be the live database.
+        return {"snapshotted": False,
+                "reason": "working DB path is the live Messages DB; refusing to write there"}
     if not os.path.exists(src):
         return {"snapshotted": False, "reason": "live Messages DB not found"}
     if not os.access(src, os.R_OK):
@@ -1156,10 +1208,17 @@ def setup_from_folder():
     ok, info, err = validate_setup_folder(body.get("folder"))
     if not ok:
         return jsonify(error=err), 400
+    if not is_safe_working_db(CHAT_DB):
+        return jsonify(error="working DB path points at the live Messages DB; "
+                             "refusing to overwrite it"), 400
     import shutil
     os.makedirs(os.path.dirname(CHAT_DB), exist_ok=True)
     try:
-        shutil.copy2(info["chat_db"], CHAT_DB)
+        # Copy to a temp file then atomically replace, so an interrupted copy
+        # can't leave a half-written working DB.
+        tmp = CHAT_DB + ".incoming"
+        shutil.copy2(info["chat_db"], tmp)
+        os.replace(tmp, CHAT_DB)
         if info["contacts"]:
             shutil.copy2(info["contacts"], os.path.join(HERE, "data", "contacts.vcf"))
     except OSError as exc:

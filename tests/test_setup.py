@@ -3,6 +3,11 @@ import os, importlib
 def _server():
     import server; return server
 
+# A minimal but real SQLite file (valid 16-byte magic header) for folder tests.
+_SQLITE_HEADER = b"SQLite format 3\x00"
+def _mk_sqlite(path):
+    path.write_bytes(_SQLITE_HEADER + b"\x00" * 100)
+
 def test_needs_setup_true_when_people_missing(tmp_path, monkeypatch):
     s = _server()
     monkeypatch.setattr(s, "PEOPLE_OUT", str(tmp_path / "nope.json"))
@@ -39,15 +44,57 @@ def test_classify_snapshot_not_found_is_blocked_but_not_fda():
 
 def test_validate_folder_ok(tmp_path):
     s = _server()
-    (tmp_path / "chat.db").write_text("x")
+    _mk_sqlite(tmp_path / "chat.db")
     ok, info, err = s.validate_setup_folder(str(tmp_path))
     assert ok and info["chat_db"].endswith("chat.db") and info["contacts"] is None and err == ""
 
 def test_validate_folder_picks_up_contacts(tmp_path):
     s = _server()
-    (tmp_path / "chat.db").write_text("x"); (tmp_path / "contacts.vcf").write_text("y")
+    _mk_sqlite(tmp_path / "chat.db"); (tmp_path / "contacts.vcf").write_text("y")
     ok, info, _ = s.validate_setup_folder(str(tmp_path))
     assert ok and info["contacts"].endswith("contacts.vcf")
+
+def test_validate_folder_rejects_non_sqlite(tmp_path):
+    s = _server()
+    (tmp_path / "chat.db").write_text("not a database")
+    ok, info, err = s.validate_setup_folder(str(tmp_path))
+    assert ok is False and "sqlite" in err.lower()
+
+def test_validate_folder_rejects_symlinked_chatdb(tmp_path):
+    s = _server()
+    real = tmp_path / "real.db"; _mk_sqlite(real)
+    link = tmp_path / "chat.db"; os.symlink(real, link)
+    ok, info, err = s.validate_setup_folder(str(tmp_path))
+    assert ok is False and "symlink" in err.lower()
+
+# ---- HIGH: never write the working DB onto the live Messages DB ----
+def test_is_safe_working_db_allows_normal_path(tmp_path):
+    s = _server()
+    assert s.is_safe_working_db(str(tmp_path / "chat.db")) is True
+
+def test_is_safe_working_db_blocks_live_db():
+    s = _server()
+    assert s.is_safe_working_db("~/Library/Messages/chat.db") is False
+    assert s.is_safe_working_db("~/Library/Messages/chat.db-wal") is False
+
+# ---- MEDIUM: SQLite header sniff ----
+def test_looks_like_sqlite(tmp_path):
+    s = _server()
+    good = tmp_path / "g.db"; _mk_sqlite(good)
+    bad = tmp_path / "b.db"; bad.write_text("nope")
+    assert s.looks_like_sqlite(str(good)) is True
+    assert s.looks_like_sqlite(str(bad)) is False
+    assert s.looks_like_sqlite(str(tmp_path / "missing.db")) is False
+
+# ---- MEDIUM: birthday validation before any Contacts mutation ----
+def test_valid_birthday():
+    s = _server()
+    assert s.valid_birthday(2, 29) is True
+    assert s.valid_birthday(12, 31) is True
+    assert s.valid_birthday(13, 1) is False
+    assert s.valid_birthday(1, 32) is False
+    assert s.valid_birthday("x", "y") is False
+    assert s.valid_birthday(None, None) is False
 
 def test_validate_folder_missing_dir(tmp_path):
     s = _server()
