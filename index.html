@@ -42,6 +42,32 @@
       <div id="status" aria-live="polite"></div>
     </header>
 
+    <section id="setup" hidden>
+      <h2>Welcome to iMessage PRM</h2>
+      <p>Everything runs on <strong>this Mac</strong>. Your messages and contacts never leave it.</p>
+      <div class="setup-actions">
+        <button id="setup-mac" class="primary">Set up from this Mac</button>
+        <p class="setup-hint">Reads your Messages + Contacts on this Mac (needs Full Disk Access — we'll show you how).</p>
+      </div>
+      <details id="setup-folder-wrap">
+        <summary>Or point at a folder (no Full Disk Access)</summary>
+        <p class="setup-hint">Copy <code>chat.db</code> (and optionally <code>contacts.vcf</code>) into a folder
+           like your Desktop, then give the path:</p>
+        <input id="setup-folder" type="text" placeholder="/Users/you/Desktop/imsg" />
+        <button id="setup-folder-go">Use this folder</button>
+      </details>
+      <div id="setup-fda" hidden>
+        <h3>Grant Full Disk Access</h3>
+        <ol>
+          <li>Open <strong>System Settings → Privacy &amp; Security → Full Disk Access</strong>.</li>
+          <li>Enable your terminal app (Terminal / iTerm), then quit &amp; reopen it.</li>
+          <li>Come back and click <strong>Try again</strong>.</li>
+        </ol>
+        <button id="setup-retry">Try again</button>
+      </div>
+      <div id="setup-status" aria-live="polite"></div>
+    </section>
+
     <div id="table-scroll">
       <div id="loading" role="status" aria-live="polite" hidden><span class="spin-dot spin-lg"></span><span id="loading-text">Searching…</span></div>
       <table id="grid">

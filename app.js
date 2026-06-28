@@ -278,6 +278,11 @@ async function persistState() {
 
 /* ---------------- Data load ---------------- */
 async function load() {
+  // First run: no index yet -> show the Setup screen instead of the table.
+  try {
+    const st = await fetch("/api/setup/status").then((r) => r.json());
+    if (st.needs_setup) { showSetup(); return; }
+  } catch (e) { /* not the live server (static mode) — fall through to normal load */ }
   statusEl.textContent = "Loading…";
   state.hideUnnamed = localStorage.getItem(LS_HIDE_UNNAMED) === "1";
   if (hideUnnamedEl) hideUnnamedEl.checked = state.hideUnnamed;
@@ -926,6 +931,45 @@ function pollJob(jobId, { onProgress, onDone, onError }) {
     setTimeout(tick, 1000);
   };
   setTimeout(tick, 1000);
+}
+
+// First-run Setup screen: bootstrap the index from the live Messages DB on this
+// Mac (Full Disk Access aware) or from a user-provided folder (no FDA). Reuses
+// the shared pollJob helper. Note: pollJob's onError callback receives a STRING
+// (job.error || job.message), not the job object — so the fda_needed branch
+// matches the message string the backend sets ("fda_needed").
+function showSetup() {
+  document.getElementById("table-scroll").hidden = true;
+  const head = document.getElementById("controls"); if (head) head.hidden = true;
+  document.getElementById("setup").hidden = false;
+  const ss = document.getElementById("setup-status");
+  const fda = document.getElementById("setup-fda");
+
+  function runJob(promise) {
+    ss.textContent = "Working…"; fda.hidden = true;
+    promise.then((r) => r.json()).then((j) => {
+      if (j.error) { ss.textContent = j.error; return; }
+      pollJob(j.job_id, {
+        onProgress: (job) => { ss.textContent = job.message || "Working…"; },
+        onDone: () => { ss.textContent = "Done — loading…"; location.reload(); },
+        onError: (msg) => {
+          if (msg === "fda_needed") { fda.hidden = false; ss.textContent = "Full Disk Access needed."; }
+          else { ss.textContent = "Setup failed: " + (msg || "unknown"); }
+        },
+      });
+    }).catch((e) => { ss.textContent = "Setup failed: " + e; });
+  }
+
+  const go = () => runJob(fetch("/api/setup/from-mac", { method: "POST" }));
+  document.getElementById("setup-mac").onclick = go;
+  document.getElementById("setup-retry").onclick = go;
+  document.getElementById("setup-folder-go").onclick = () => {
+    const folder = document.getElementById("setup-folder").value.trim();
+    if (!folder) { ss.textContent = "Enter a folder path."; return; }
+    runJob(fetch("/api/setup/from-folder", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ folder }) }));
+  };
 }
 
 // Re-pull the generated data + shared state after a rebuild and re-render.

@@ -373,3 +373,81 @@ td.col-match .snip { display: block; }
   #app { max-width: 100%; height: 100vh; margin: 0; border-radius: 0; border-left: none; border-right: none; }
   :root { --pad-x: 14px; }
 }
+
+/* ---- First-run Setup screen ----
+   Centered onboarding panel shown in place of the table when no index exists. */
+#setup {
+  flex: 1;
+  overflow-y: auto;
+  padding: 40px var(--pad-x) 56px;
+  max-width: 560px;
+  margin: 0 auto;
+  width: 100%;
+}
+#setup h2 { margin: 0 0 8px; font-size: 22px; }
+#setup p { color: var(--muted); margin: 0 0 16px; }
+#setup .setup-actions {
+  background: var(--surface-sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 18px;
+  margin: 8px 0 20px;
+}
+#setup .setup-hint { font-size: 12.5px; color: var(--faint); margin: 8px 0 0; }
+#setup code {
+  background: var(--blue-wash);
+  border: 1px solid var(--blue-wash-line);
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
+  font-size: 12px;
+}
+#setup button.primary {
+  background: var(--blue);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 9px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+#setup button.primary:hover { background: var(--blue-deep); }
+#setup-folder-wrap {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+  margin-bottom: 20px;
+}
+#setup-folder-wrap summary { cursor: pointer; font-weight: 600; }
+#setup-folder {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  font: inherit;
+  margin: 4px 0 10px;
+}
+#setup-folder-wrap button,
+#setup-fda button {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 7px 14px;
+  font: inherit;
+  cursor: pointer;
+}
+#setup-folder-wrap button:hover,
+#setup-fda button:hover { background: var(--hover); }
+#setup-fda {
+  background: var(--blue-wash);
+  border: 1px solid var(--blue-wash-line);
+  border-radius: var(--radius-md);
+  padding: 14px 18px;
+  margin-bottom: 16px;
+}
+#setup-fda h3 { margin: 0 0 8px; font-size: 15px; }
+#setup-fda ol { margin: 0 0 12px; padding-left: 20px; color: var(--text); }
+#setup-fda li { margin-bottom: 4px; }
+#setup-status { color: var(--muted); min-height: 1.2em; font-size: 13px; }
